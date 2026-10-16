@@ -2076,10 +2076,20 @@ export default function App() {
         <div className="mx-auto flex max-w-3xl flex-wrap lg:max-w-[1400px] items-center gap-x-3 gap-y-2 px-4 py-2.5">
           <div className="flex w-full min-w-0 items-center gap-1.5 sm:w-auto sm:flex-1">
             <Boxes className="size-5 shrink-0 text-primary" aria-hidden />
-            <h1 className="mr-auto truncate text-sm font-semibold">
+            <h1 className="min-w-0 truncate text-sm font-semibold">
               sing-box <span className="hidden min-[400px]:inline">配置</span>生成器
               <span className="ml-2 hidden font-normal text-muted-foreground md:inline">DNS、IPv6 与分流的最佳实践</span>
             </h1>
+            <a
+              href={REPO_URL}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants({ variant: "ghost", size: "icon-sm", className: "mr-auto text-muted-foreground" })}
+              aria-label="GitHub 源码"
+              title="GitHub 源码"
+            >
+              <GitHubIcon className="size-3.5" />
+            </a>
             <Select
               value={active.id}
               items={store.profiles.map((p) => ({ value: p.id, label: p.name }))}
@@ -2097,16 +2107,6 @@ export default function App() {
               </SelectContent>
             </Select>
             {manageMenu}
-            <a
-              href={REPO_URL}
-              target="_blank"
-              rel="noreferrer"
-              className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
-              aria-label="GitHub 源码"
-              title="GitHub 源码"
-            >
-              <GitHubIcon className="size-3.5" />
-            </a>
           </div>
           <Separator orientation="vertical" className="hidden h-6 sm:block" />
           <div className="flex w-full items-center gap-1.5 sm:w-auto">

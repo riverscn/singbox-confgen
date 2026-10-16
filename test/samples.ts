@@ -2,7 +2,7 @@
 // Template placeholders are filled with well-formed values so checks exercise field structure.
 // Shared by the schema test and scripts/gen-check-configs.ts (`sing-box check`).
 import { parseJsonc } from "../src/generate";
-import { blueprintProfile, newGroup, newNode, newTailnet } from "../src/defaults";
+import { blueprintProfile, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
 import { TEMPLATES } from "../src/templates";
 import type { Profile } from "../src/types";
 
@@ -44,8 +44,8 @@ function fullProfile(): Profile {
     blockIcloudQuic: true,
     clientSubnet: "203.0.113.0/24",
     clashSecret: "s",
-    directDomains: ["example.cn"],
-    proxyRules: ["intercom.io", "203.0.113.0/24", "2001:db8::/32"],
+    directDomains: ["example.cn", "domain:www.example.org", "domain_keyword:intranet", ".example.org", "198.51.100.0/24", "2001:db8:1::/48"],
+    proxyRules: ["intercom.io", "203.0.113.0/24", "2001:db8::/32", "domain_regex:^cdn\\d+\\.example\\.net$", "ip_cidr:198.51.100.0/24"],
     tailnets: [
       newTailnet({ tag: "home", endpoint: '{"state_directory":"ts-home","hostname":"a","accept_routes":true}' }),
       newTailnet({
@@ -53,8 +53,8 @@ function fullProfile(): Profile {
         endpoint: '{"state_directory":"ts-work","hostname":"b","accept_routes":true}',
         exitNode: "gw",
         acceptDefaultResolvers: true,
-        dnsDomains: ["corp.example.com"],
-        routes: ["10.20.0.0/16", "nas.example.com"],
+        dnsDomains: ["corp.example.com", "domain_keyword:corp"],
+        routes: ["10.20.0.0/16", "nas.example.com", "domain:nas.lan"],
         asProxy: true,
       }),
     ],
@@ -66,6 +66,10 @@ function fullProfile(): Profile {
   p.groups = [pick, fast];
   p.settings.proxyDefault = fast.id;
   p.settings.listNodesInProxy = false;
+  p.settings.rules = [
+    newRule({ outbound: fast.id, lines: ["openai.com", "domain_keyword:claude", "192.0.2.0/24"] }),
+    newRule({ outbound: c.id, lines: ["domain:api.example.net"] }),
+  ];
   return p;
 }
 
@@ -97,6 +101,22 @@ export function sampleProfiles(): { name: string; profile: Profile }[] {
       p.settings.remoteDns = { provider, protocol };
       samples.push({ name: `dns-${provider}-${protocol}`, profile: p });
     }
+  }
+  {
+    // Rules to an endpoint node (WireGuard), a plain node and a group, with RE2-only regex syntax.
+    const p = blueprintProfile();
+    const wg = newNode({ tag: "wg", body: filledBody("wireguard") });
+    const hy2 = newNode({ tag: "hy2", body: filledBody("hysteria2") });
+    const g = newGroup({ tag: "pick", members: [hy2.id, wg.id] });
+    p.nodes = [hy2, wg];
+    p.groups = [g];
+    p.settings.directDomains = [".direct.example", "domain_regex:(?i)^LAN\\d+\\."];
+    p.settings.rules = [
+      newRule({ outbound: wg.id, lines: ["corp.example", "10.30.0.0/16", "fd00:30::/32"] }),
+      newRule({ outbound: hy2.id, lines: ["domain_regex:^(?P<host>[a-z]+)\\.cdn\\.example$", "domain_regex:^\\pL+\\.example$", "domain_keyword:tracker"] }),
+      newRule({ outbound: g.id, lines: ["domain:api.example", ".sub.example"] }),
+    ];
+    samples.push({ name: "rules-edge", profile: p });
   }
   {
     const p = blueprintProfile();

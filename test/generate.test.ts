@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { generateConfig, jsonErrorOffset, nodeObject, parseJsonc, parseRuleList, stripComments, validate } from "../src/generate";
-import { blueprintProfile, newGroup, newNode, newTailnet } from "../src/defaults";
+import { generateConfig, jsonErrorOffset, nodeObject, parseDomainList, parseJsonc, parseRuleList, stripComments, validate } from "../src/generate";
+import { blueprintProfile, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
 import { normalizeProfile } from "../src/storage";
 import { TEMPLATES, NODE_TYPES } from "../src/templates";
 import type { Profile, Tailnet } from "../src/types";
 import { normalize } from "./normalize";
 import { walk, type Query } from "./dnswalk";
+import { filledBody } from "./samples";
+import { routeWalk, type Connection } from "./routewalk";
 
 // SFM's tiger.json (sanitized) before the DNS redesign. Non-DNS parts must still match it.
 const baseline = normalize(JSON.parse(readFileSync(new URL("./fixtures/tiger-baseline.json", import.meta.url), "utf8"))) as any;
@@ -231,6 +233,14 @@ describe("proxy groups", () => {
     expect(proxy).toEqual({ type: "selector", tag: "proxy", outbounds: ["auto", "main"], default: "main" });
   });
 
+  it("can default to a listed node, and falls back to auto once nodes are no longer listed", () => {
+    const { p, hy2 } = setup();
+    p.settings.proxyDefault = hy2.id;
+    expect(byTag(gen(p)).proxy.default).toBe(hy2.tag);
+    p.settings.listNodesInProxy = false;
+    expect(byTag(gen(p)).proxy.default).toBe("auto");
+  });
+
   it("falls back to auto when the default group is gone", () => {
     const { p } = setup();
     p.settings.proxyDefault = "missing";
@@ -338,8 +348,95 @@ describe("custom direct domains", () => {
   });
 
   it("cleans and de-duplicates entries", () => {
-    const cfg = withList(["Example.CN", "*.corp.example.com  # office", "", ".example.cn", "a.b."]);
+    const cfg = withList(["Example.CN", "corp.example.com  # office", "", "example.cn", "a.b."]);
     expect(ruleSet(cfg).rules).toEqual([{ domain_suffix: ["example.cn", "corp.example.com", "a.b"] }]);
+  });
+
+  it("takes sing-box field names as prefixes, and a leading dot for subdomains only", () => {
+    const cfg = withList([
+      "domain:WWW.Example.org",
+      "domain_suffix:example.net",
+      ".example.net",
+      "domain_keyword:Tracker, example.cn",
+      "domain_regex:^cdn\\d{1,3}\\.example\\.com$  # CDN nodes",
+      "domain_regex:^a#b$",
+    ]);
+    expect(ruleSet(cfg).rules).toEqual([
+      {
+        domain: ["www.example.org"],
+        domain_suffix: ["example.net", ".example.net", "example.cn"],
+        domain_keyword: ["tracker"],
+        domain_regex: ["^cdn\\d{1,3}\\.example\\.com$", "^a#b$"],
+      },
+    ]);
+  });
+
+  it("rejects what sing-box cannot use, and says how to fix it", () => {
+    const reason = (line: string, ip = false) => (ip ? parseRuleList(line) : parseDomainList(line)).invalid[0]?.reason;
+    expect(reason("domain_regex:(?=x)")).toContain("环视");
+    expect(reason("domain_regex:a(")).toBe("正则语法有误");
+    expect(reason("domain_regex:(a)\\1")).toContain("反向引用");
+    expect(reason("domain_regex:Upper")).toContain("小写");
+    expect(reason("domain_regex:(?i)OK")).toBeUndefined();
+    expect(reason("domain_regex:(?P<n>x)\\pL")).toBeUndefined();
+    expect(reason("domain_keyword:a b")).toContain("关键字");
+    expect(reason("domain:")).toBe("前缀后面缺少域名");
+    expect(reason("*.example.com")).toBe("不支持通配符：只匹配子域名写 .example.com，连同它本身写 example.com");
+    expect(reason("full:example.com")).toBe("前缀请用 domain:");
+    expect(reason("keyword:x")).toBe("前缀请用 domain_keyword:");
+    expect(reason("foo:x")).toBe("不认识的前缀 foo:");
+    expect(reason("https://www.Example.com/a?b")).toBe("只填域名，例如 www.example.com");
+    expect(reason("example.com:443")).toContain("不支持端口");
+    expect(reason("localhost:8080")).toContain("不支持端口");
+    expect(reason("a b")).toContain("空格");
+    expect(reason("ip_cidr:10.0.0.0/8")).toBe("这里只能填域名");
+    expect(reason("10.0.0.1")).toBe("这里只能填域名");
+    expect(reason("10.0.0.1", true)).toBeUndefined();
+    expect(reason("fd00::/8", true)).toBeUndefined();
+    expect(reason("300.1.1.1", true)).toBe("IP 地址或网段格式不正确");
+    expect(reason("example.com/path", true)).toBe("只填域名，不要带路径");
+  });
+
+  it("puts the reasons in the validation message", () => {
+    const p = blueprintProfile();
+    p.settings.directDomains = ["ok.example", "*.a.example"];
+    expect(validate(p).find((i) => i.message.includes("直连域名"))?.message).toBe(
+      "直连域名或 IP 格式不正确：*.a.example（不支持通配符：只匹配子域名写 .a.example，连同它本身写 a.example）",
+    );
+  });
+
+  it("takes IP prefixes into their own set, and leaves the config as it was without them", () => {
+    const plain = withList(["example.com"]);
+    expect(plain.route.rule_set.some((r: any) => r.tag === "custom-direct-ips")).toBe(false);
+    expect(JSON.stringify(plain.route.rules)).toContain('{"rule_set":"custom-direct-domains"}');
+    const cfg = withList(["example.com", "198.51.100.0/24", "2001:db8::1"]);
+    expect(ruleSet(cfg).rules).toEqual([{ domain_suffix: ["example.com"] }]);
+    expect(cfg.route.rule_set.find((r: any) => r.tag === "custom-direct-ips").rules).toEqual([{ ip_cidr: ["198.51.100.0/24", "2001:db8::1/128"] }]);
+    expect(JSON.stringify(cfg.route.rules)).toContain('{"rule_set":["custom-direct-domains","custom-direct-ips"]}');
+    // DNS goes by domain only.
+    expect(JSON.stringify(cfg.dns.rules)).not.toContain("custom-direct-ips");
+  });
+
+  it("sends listed addresses direct in every mode but Global, ahead of the proxy list", () => {
+    const p = blueprintProfile();
+    p.settings.directDomains = ["203.0.113.0/24"];
+    p.settings.proxyRules = ["203.0.113.0/24"];
+    const at = (mode: Connection["mode"]) => routeWalk(gen(p), { mode, ip: "203.0.113.9" });
+    expect(at("Non-CN")).toBe("route:direct");
+    expect(at("GFWList")).toBe("route:direct");
+    expect(at("Global")).toBe("route:proxy");
+  });
+
+  it("still refuses CN IPv6 listed as direct when there is no local IPv6, even if the proxy list has it too", () => {
+    const p = blueprintProfile();
+    p.settings.directDomains = ["240e::/20"];
+    const at = (publicV6Iface: boolean) => routeWalk(gen(p), { mode: "Non-CN", ip: "240e:1::1", cn: true, publicV6Iface });
+    expect(at(false)).toBe("reject");
+    expect(at(true)).toBe("route:direct");
+    // Also in the proxy list: the direct list wins in routing, so the address is still refused.
+    p.settings.proxyRules = ["240e::/20", "2408::/16"];
+    expect(at(false)).toBe("reject");
+    expect(routeWalk(gen(p), { mode: "Non-CN", ip: "2408::1", cn: true, publicV6Iface: false })).toBe("route:proxy");
   });
 
   it("routes listed domains direct in every mode but Global", () => {
@@ -382,9 +479,9 @@ describe("custom proxy domains and IPs", () => {
   const set = (cfg: any, tag: string) => cfg.route.rule_set.find((r: any) => r.tag === tag).rules;
 
   it("splits domains and IP prefixes into the two rule-sets", () => {
-    const cfg = withList(["Intercom.io", "203.0.113.7", "2001:db8::/32", "10.0.0.0/8  # lab", "bad entry"]);
+    const cfg = withList(["Intercom.io", "203.0.113.7", "2001:db8::/32", "10.0.0.0/8  # lab", "ip_cidr:192.0.2.0/24", "ip_cidr:x", "bad entry"]);
     expect(set(cfg, "gfwlist-custom-domains")).toEqual([{ domain_suffix: ["intercom.io"] }]);
-    expect(set(cfg, "gfwlist-custom-ips")).toEqual([{ ip_cidr: ["203.0.113.7/32", "2001:db8::/32", "10.0.0.0/8"] }]);
+    expect(set(cfg, "gfwlist-custom-ips")).toEqual([{ ip_cidr: ["203.0.113.7/32", "2001:db8::/32", "10.0.0.0/8", "192.0.2.0/24"] }]);
   });
 
   it("keeps placeholders and adds no rules when empty", () => {
@@ -416,10 +513,155 @@ describe("custom proxy domains and IPs", () => {
 
   it("parses IPv4, IPv6 and bare addresses", () => {
     expect(parseRuleList("1.2.3.4\n1.2.3.0/24\n::1\nfe80::/10\n300.1.1.1\n1.2.3.4/33")).toEqual({
-      domains: [],
+      domains: { domain: [], domain_suffix: [], domain_keyword: [], domain_regex: [] },
       cidrs: ["1.2.3.4/32", "1.2.3.0/24", "::1/128", "fe80::/10"],
-      invalid: ["300.1.1.1", "1.2.3.4/33"],
+      invalid: [
+        { entry: "300.1.1.1", reason: "IP 地址或网段格式不正确" },
+        { entry: "1.2.3.4/33", reason: "IP 地址或网段格式不正确" },
+      ],
     });
+  });
+});
+
+describe("rules", () => {
+  const setup = (lines: string[], outbound?: (p: Profile) => string) => {
+    const p = blueprintProfile();
+    p.settings.directDomains = ["direct.example"];
+    p.settings.proxyRules = ["proxied.example"];
+    p.settings.rules = [newRule({ outbound: outbound ? outbound(p) : p.nodes[1].id, lines })];
+    return p;
+  };
+
+  it("sends matching traffic to the chosen node, after the direct list and before the proxy list", () => {
+    const p = setup(["openai.com", "domain_keyword:claude", "192.0.2.0/24"]);
+    const rules = gen(p).route.rules;
+    const idx = rules.findIndex((r: any) => r.outbound === "reality-1");
+    expect(rules[idx]).toEqual({ domain_suffix: ["openai.com"], domain_keyword: ["claude"], ip_cidr: ["192.0.2.0/24"], action: "route", outbound: "reality-1" });
+    expect(rules.findIndex((r: any) => JSON.stringify(r).includes("custom-direct-domains"))).toBeLessThan(idx);
+    expect(idx).toBeLessThan(rules.findIndex(usesCustomList));
+    expect(rules.findIndex((r: any) => r.clash_mode === "Direct")).toBeLessThan(idx);
+  });
+
+  it("can send traffic to a group, and keeps rule order", () => {
+    const p = setup(["a.example"]);
+    const g = newGroup({ tag: "us", members: [p.nodes[0].id] });
+    p.groups = [g];
+    p.settings.rules.push(newRule({ outbound: g.id, lines: ["b.example"] }));
+    const outs = gen(p).route.rules.filter((r: any) => r.action === "route").map((r: any) => r.outbound);
+    expect(outs.indexOf("reality-1")).toBeLessThan(outs.indexOf("us"));
+  });
+
+  it("resolves rule domains remotely and IPv4-only, like the proxy list", () => {
+    const dns = gen(setup(["openai.com"])).dns.rules;
+    for (const mode of ["GFWList", "Non-CN", "Global"] as const) {
+      expect(walk(dns, { mode, qtype: "A", ruleDomain: true, cnSite: true }), mode).toEqual({ evaluated: [], final: "route:remote" });
+      expect(walk(dns, { mode, qtype: "AAAA", ruleDomain: true }).final, mode).toBe("predefined:NOERROR");
+    }
+    expect(walk(dns, { mode: "Direct", qtype: "A", ruleDomain: true })).toEqual({ evaluated: [], final: "route:local" });
+    expect(walk(dns, { mode: "GFWList", qtype: "A", ruleDomain: true, customDirect: true }).final).toBe("route:local");
+  });
+
+  it("adds no DNS rule-set for IP-only rules", () => {
+    const cfg = gen(setup(["192.0.2.0/24"]));
+    expect(cfg.route.rule_set.some((r: any) => r.tag === "custom-rule-domains")).toBe(false);
+  });
+
+  it("leaves out rules with no exit, a deleted exit, an empty group or no entries, and says why", () => {
+    const empty = newGroup({ tag: "empty" });
+    const cases: [Profile, string][] = [
+      [setup(["a.example"], () => ""), "还没有选择出口"],
+      [setup(["a.example"], () => "gone"), "已删除"],
+      [Object.assign(setup(["a.example"], () => empty.id), { groups: [empty] }), "还是空的"],
+      [setup(["# nothing"]), "还没有填写域名或 IP"],
+    ];
+    for (const [p, msg] of cases) {
+      const cfg = gen(p);
+      expect(JSON.stringify(cfg.route.rules)).not.toContain("a.example");
+      expect(cfg.route.rule_set.some((r: any) => r.tag === "custom-rule-domains")).toBe(false);
+      expect(validate(p).find((i) => i.id === p.settings.rules[0].id)?.message).toContain(msg);
+    }
+  });
+
+  it("can send traffic to an endpoint node such as WireGuard", () => {
+    const p = blueprintProfile();
+    const wg = newNode({ tag: "wg", body: filledBody("wireguard") });
+    p.nodes.push(wg);
+    p.settings.rules = [newRule({ outbound: wg.id, lines: ["10.30.0.0/16"] })];
+    const cfg = gen(p);
+    expect(cfg.endpoints.map((e: any) => e.tag)).toContain("wg");
+    expect(cfg.route.rules).toContainEqual({ ip_cidr: ["10.30.0.0/16"], action: "route", outbound: "wg" });
+  });
+
+  it("comes after tailnet routes", () => {
+    const p = setup(["nas.example.com"]);
+    p.settings.tailnets = [newTailnet({ tag: "ts", routes: ["nas.example.com"] })];
+    const outs = gen(p).route.rules.map((r: any) => r.outbound);
+    expect(outs.indexOf("ts")).toBeLessThan(outs.indexOf("reality-1"));
+  });
+
+  it("is left out with a warning when the node's JSON is broken", () => {
+    const p = setup(["a.example"]);
+    p.nodes[1].body = "{ broken";
+    expect(JSON.stringify(gen(p).route.rules)).not.toContain("a.example");
+    expect(validate(p).find((i) => i.id === p.settings.rules[0].id)?.message).toBe("规则 1：节点「reality-1」的配置有错误，暂不写入配置");
+  });
+
+  it("reports malformed entries", () => {
+    const p = setup(["ok.example", "bad entry"]);
+    expect(validate(p).find((i) => i.id === p.settings.rules[0].id)?.message).toBe("规则 1：域名或 IP 格式不正确：bad entry（一行只写一项，中间不能有空格）");
+  });
+});
+
+describe("rejecting direct CN IPv6 without local IPv6", () => {
+  const cnV6: Omit<Connection, "mode"> = { ip: "240e:1::1", cn: true, publicV6Iface: false };
+  const profile = (extra: Partial<Profile["settings"]> = {}, rule?: string[]) => {
+    const p = blueprintProfile();
+    Object.assign(p.settings, extra);
+    if (rule) p.settings.rules = [newRule({ outbound: p.nodes[1].id, lines: rule })];
+    return p;
+  };
+  const where = (p: Profile, mode: Connection["mode"], c: Omit<Connection, "mode"> = cnV6) => routeWalk(gen(p), { mode, ...c });
+
+  it("rejects unlisted CN IPv6 in GFWList and Non-CN, so apps fall back to IPv4", () => {
+    const p = profile();
+    expect(where(p, "GFWList")).toBe("reject");
+    expect(where(p, "Non-CN")).toBe("reject");
+    expect(where(p, "Global")).toBe("route:proxy");
+    expect(where(p, "Direct")).toBe("route:direct");
+    expect(where(p, "Non-CN", { ...cnV6, publicV6Iface: true })).toBe("route:direct");
+  });
+
+  it("lets prefixes in a rule through to the rule's node in both modes", () => {
+    const p = profile({}, ["240e::/20"]);
+    expect(where(p, "GFWList")).toBe("route:reality-1");
+    expect(where(p, "Non-CN")).toBe("route:reality-1");
+    // Outside the listed prefix: still refused.
+    expect(where(p, "Non-CN", { ...cnV6, ip: "240e:3000::1" })).toBe("reject");
+    expect(gen(p).route.rule_set.find((r: any) => r.tag === "custom-rule-ips")).toEqual({
+      type: "inline",
+      tag: "custom-rule-ips",
+      rules: [{ ip_cidr: ["240e::/20"] }],
+    });
+  });
+
+  it("matches a rule's prefixes by address even when the rule also lists domains", () => {
+    const p = profile({}, ["openai.com", "domain_keyword:claude", "2408::/16"]);
+    expect(where(p, "Non-CN", { ...cnV6, ip: "2408:8000::1" })).toBe("route:reality-1");
+    expect(where(p, "Global", { ip: "2408:8000::1" })).toBe("route:reality-1");
+  });
+
+  it("lets prefixes in the proxy list through to proxy, in Non-CN mode too", () => {
+    const p = profile({ proxyRules: ["240e::/20"] });
+    expect(where(p, "GFWList")).toBe("route:proxy");
+    expect(where(p, "Non-CN")).toBe("route:proxy");
+    expect(where(p, "Non-CN", { ...cnV6, ip: "240e:3000::1" })).toBe("reject");
+  });
+
+  it("leaves the rule as it was when no list has IP prefixes", () => {
+    const plain = gen(profile({ proxyRules: ["example.com"] }, ["openai.com"]));
+    expect(JSON.stringify(plain.route.rules[0])).not.toContain("custom-rule-ips");
+    expect(JSON.stringify(plain.route.rules[0])).not.toContain('"gfwlist-custom-ips","invert"');
+    expect(plain.route.rule_set.some((r: any) => r.tag === "custom-rule-ips")).toBe(false);
   });
 });
 
@@ -443,6 +685,12 @@ describe("Tailscale", () => {
     expect(split.dns.servers.find((s: any) => s.tag === "a-dns")).toEqual({ type: "tailscale", tag: "a-dns", endpoint: "a", accept_search_domain: true });
     expect(split.dns.rules[0]).toEqual({ domain_suffix: ["corp.example.com"], action: "route", server: "a-dns" });
     expect(JSON.stringify(split.dns.rules)).not.toContain('"preferred_by":"a-dns"');
+  });
+
+  it("takes match prefixes in split DNS and extra routes", () => {
+    const cfg = gen(withTailnets(newTailnet({ tag: "a", magicDns: false, dnsDomains: ["domain_keyword:corp"], routes: ["domain:nas.lan", "10.0.0.0/8"] })));
+    expect(cfg.dns.rules[0]).toEqual({ domain_keyword: ["corp"], action: "route", server: "a-dns" });
+    expect(cfg.route.rules).toContainEqual({ domain: ["nas.lan"], ip_cidr: ["10.0.0.0/8"], action: "route", outbound: "a" });
   });
 
   it("routes tailnet devices and extra routes to the endpoint, and keeps them out of the IPv6 reject rule", () => {

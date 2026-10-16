@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
-import type { Platform, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, Settings, Tailnet } from "./types";
+import type { Platform, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RouteRule, Settings, Tailnet } from "./types";
 import { TEMPLATES } from "./templates";
-import { REMOTE_DNS, generateConfig, nodeObject, parseDomainList, parseRuleList, tailnetEndpoint, validate, type Issue } from "./generate";
-import { defaultSettings, freshTag, newGroup, newNode, newTailnet, randomSecret } from "./defaults";
+import { REMOTE_DNS, generateConfig, nodeObject, proxyChoices, parseDomainList, parseRuleList, tailnetEndpoint, validate, type DomainMatch, type Issue } from "./generate";
+import { defaultSettings, freshTag, newGroup, newNode, newRule, newTailnet, randomSecret } from "./defaults";
 import { clearStore, defaultStore, loadStore, newSavedProfile, saveStore, type Store } from "./storage";
 import { fitImport, importSingBoxConfig, type ImportResult } from "./importer";
 import { useDialogs } from "./dialog";
@@ -17,6 +17,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  CircleHelp,
   CircleAlert,
   CircleCheck,
   Copy,
@@ -50,6 +51,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import {
@@ -259,6 +261,34 @@ function ItemCard(props: {
   );
 }
 
+/** A "?" that opens an explanation on click (or tap), for terms used in running text. */
+function HelpTip(props: { label: string; children: ReactNode }) {
+  return (
+    <Popover>
+      <PopoverTrigger
+        aria-label={props.label}
+        className="mx-0.5 inline-flex size-4 cursor-pointer items-center justify-center rounded-full align-[-3px] text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/30 data-popup-open:text-foreground"
+      >
+        <CircleHelp className="size-3.5" aria-hidden />
+      </PopoverTrigger>
+      <PopoverContent>{props.children}</PopoverContent>
+    </Popover>
+  );
+}
+
+/** `proxy`, with what it is a click away. */
+function ProxyTerm() {
+  return (
+    <>
+      <span className="font-mono">proxy</span>
+      <HelpTip label="proxy 是什么">
+        <span className="font-mono">proxy</span> 是默认的代理选择器，包含所有可选的出口：<span className="font-mono">auto</span>
+        （全部节点自动测速）、各代理组，以及开启「逐个列出节点」时的每个节点。使用时可以在客户端或 Clash API 里随时切换；默认选哪个在「代理组」页设置。
+      </HelpTip>
+    </>
+  );
+}
+
 function IconAction(props: { label: string; onClick: () => void; disabled?: boolean; danger?: boolean; children: ReactNode }) {
   return (
     <Tooltip>
@@ -457,45 +487,107 @@ function ChoiceCards<T extends string>(props: {
   );
 }
 
-/** Line-based list editor with live parse feedback. */
+const MATCH_NAMES: [keyof DomainMatch, string][] = [
+  ["domain_suffix", "域名后缀"],
+  ["domain", "完整域名"],
+  ["domain_keyword", "关键字"],
+  ["domain_regex", "正则"],
+];
+
+/** The one place the list syntax is explained; every list editor can open it. */
+const SYNTAX: { example: string; name: string; desc: string; ip?: boolean }[] = [
+  { example: "example.com", name: "域名后缀", desc: "匹配 example.com 和它的所有子域名" },
+  { example: ".example.com", name: "域名后缀", desc: "只匹配子域名，不含 example.com 本身" },
+  { example: "domain:example.com", name: "完整域名", desc: "只匹配 example.com 本身" },
+  { example: "domain_keyword:google", name: "关键字", desc: "域名里含有 google 就匹配" },
+  { example: "domain_regex:^cdn\\d+\\.", name: "正则", desc: "用正则匹配域名（Go RE2 语法，域名已转成小写）" },
+  { example: "203.0.113.0/24", name: "IP 段", desc: "IPv4 或 IPv6 网段，也可以是单个地址", ip: true },
+];
+
+function SyntaxHelp(props: { id: string; allowIp?: boolean }) {
+  return (
+    <div id={props.id} className="rounded-md bg-muted/60 px-3 py-2.5 text-xs/relaxed">
+      <dl className="grid gap-x-4 sm:grid-cols-[auto_1fr] sm:gap-y-1">
+        {SYNTAX.filter((r) => props.allowIp || !r.ip).map((r) => (
+          <Fragment key={r.example}>
+            <dt className="font-mono">{r.example}</dt>
+            <dd className="mb-1.5 text-muted-foreground sm:mb-0">
+              <span className="text-foreground">{r.name}</span>：{r.desc}
+            </dd>
+          </Fragment>
+        ))}
+      </dl>
+      <p className="mt-2 text-muted-foreground">
+        每行一项，<span className="font-mono">#</span> 之后为注释。前缀就是 sing-box 规则的字段名，
+        <span className="font-mono">domain_suffix:</span>
+        {props.allowIp && (
+          <>
+            {" "}和 <span className="font-mono">ip_cidr:</span>
+          </>
+        )}{" "}
+        可以省略。详见{" "}
+        <a
+          href="https://sing-box.sagernet.org/zh/configuration/route/rule/"
+          target="_blank"
+          rel="noreferrer"
+          className="text-foreground underline underline-offset-2"
+        >
+          sing-box 路由规则文档
+        </a>
+        。
+      </p>
+    </div>
+  );
+}
+
+/** Line-based list editor: shows what each entry was read as, why the others were not, and the syntax on demand. */
 function ListEditor(props: {
   id?: string;
+  ariaLabel?: string;
   lines: string[];
   onChange: (lines: string[]) => void;
   placeholder: string;
-  summary: (text: string) => { count: number; invalid: string[] };
-  unit: string;
+  /** Also take IP addresses and prefixes. */
+  allowIp?: boolean;
 }) {
-  const { count, invalid } = props.summary(props.lines.join("\n"));
+  const [help, setHelp] = useState(false);
+  const helpId = useId();
+  const text = props.lines.join("\n");
+  const { domains, cidrs, invalid } = props.allowIp ? parseRuleList(text) : { ...parseDomainList(text), cidrs: [] };
+  const parts = [
+    ...MATCH_NAMES.flatMap(([field, name]) => (domains[field].length ? [`${domains[field].length} 个${name}`] : [])),
+    ...(cidrs.length ? [`${cidrs.length} 个 IP 段`] : []),
+  ];
   return (
     <>
       <Textarea
         id={props.id}
+        aria-label={props.ariaLabel}
         className="field-sizing-fixed font-mono text-base md:text-xs/relaxed"
         rows={Math.min(12, Math.max(3, props.lines.length + 1))}
-        value={props.lines.join("\n")}
+        value={text}
         placeholder={props.placeholder}
         spellCheck={false}
         onChange={(e) => props.onChange(e.target.value.split("\n"))}
       />
-      {(count > 0 || invalid.length > 0) && (
-        <p className="text-xs text-muted-foreground">
-          {count > 0 && `已识别 ${count} ${props.unit}`}
-          {invalid.length > 0 && <span className="text-destructive">{count > 0 && "；"}无法识别：{invalid.join("、")}</span>}
-        </p>
-      )}
+      <div className="flex items-start gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5 text-xs text-muted-foreground">
+          {parts.length > 0 && <p>已识别：{parts.join("、")}</p>}
+          {invalid.map((x) => (
+            <p key={x.entry} className="text-destructive">
+              <span className="font-mono break-all">{x.entry}</span>：{x.reason}
+            </p>
+          ))}
+        </div>
+        <Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground" aria-expanded={help} aria-controls={helpId} onClick={() => setHelp(!help)}>
+          <CircleHelp />
+          写法
+        </Button>
+      </div>
+      {help && <SyntaxHelp id={helpId} allowIp={props.allowIp} />}
     </>
   );
 }
-
-const domainSummary = (text: string) => {
-  const { domains, invalid } = parseDomainList(text);
-  return { count: domains.length, invalid };
-};
-const ruleSummary = (text: string) => {
-  const { domains, cidrs, invalid } = parseRuleList(text);
-  return { count: domains.length + cidrs.length, invalid };
-};
 
 interface Candidate {
   id: string;
@@ -771,13 +863,18 @@ function Intro(props: { children: ReactNode }) {
   return <p className="max-w-prose text-xs/relaxed text-muted-foreground">{props.children}</p>;
 }
 
+/** How many there are, beside a tab or list title: the same pill in both places. */
+function Count(props: { n: number; className?: string }) {
+  return <span className={cn("rounded-full bg-muted px-1.5 text-[11px] leading-4 font-normal text-muted-foreground tabular-nums", props.className)}>{props.n}</span>;
+}
+
 /** Title and count of a list, with its actions on the right. */
-function ListHead(props: { title: string; count: number; children: ReactNode }) {
+function ListHead(props: { title: ReactNode; count: number; children: ReactNode }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-      <h2 className="text-xs font-medium">
+      <h2 className="inline-flex items-center gap-1.5 text-xs font-medium">
         {props.title}
-        <span className="ml-1.5 text-muted-foreground tabular-nums">{props.count}</span>
+        <Count n={props.count} />
       </h2>
       <div className="flex flex-wrap items-center gap-1.5">{props.children}</div>
     </div>
@@ -800,6 +897,19 @@ function Panel(props: { title?: ReactNode; description?: ReactNode; children: Re
       )}
       {props.children}
     </section>
+  );
+}
+
+/** A routing-tab title with its position in the matching order, centered on the text. */
+function OrderedTitle(props: { n: number; children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {/* Outlined, unlike the plain count after a list title and the filled steps on the Start tab. */}
+      <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[10px] leading-none font-semibold text-foreground tabular-nums ring-1 ring-foreground/40">
+        {props.n}
+      </span>
+      {props.children}
+    </span>
   );
 }
 
@@ -867,7 +977,7 @@ function ModeBehavior(props: { settings: Settings }) {
   );
 }
 
-function RoutingCard(props: { settings: Settings; onChange: (patch: Partial<Settings>) => void }) {
+function RoutingCard(props: { settings: Settings; onChange: (patch: Partial<Settings>) => void; rules: ReactNode }) {
   const { settings: s } = props;
   return (
     <>
@@ -875,40 +985,101 @@ function RoutingCard(props: { settings: Settings; onChange: (patch: Partial<Sett
         <ChoiceCards value={s.defaultMode} options={MODES} onChange={(defaultMode) => props.onChange({ defaultMode })} ariaLabel="默认模式" />
         <ModeBehavior settings={s} />
       </Panel>
+      <Intro>下面三部分按顺序匹配，先匹配到的生效；都没有匹配上的流量按模式处理。</Intro>
       <Panel
-        title="自定义列表"
+        title={<OrderedTitle n={1}>直连域名和 IP</OrderedTitle>}
+        description="除 Global 外始终直连，域名用本地 DNS 解析；IP 适合只按地址连接的应用和自己的服务器"
+      >
+        <ListEditor
+          ariaLabel="直连域名和 IP"
+          lines={s.directDomains}
+          onChange={(directDomains) => props.onChange({ directDomains })}
+          placeholder={"example.cn\nintranet.example.com  # 公司内网\n198.51.100.0/24  # 自己的服务器"}
+          allowIp
+        />
+      </Panel>
+      {props.rules}
+      <Panel
+        title={<OrderedTitle n={3}>代理域名和 IP</OrderedTitle>}
         description={
           <>
-            每行一项，域名同时匹配所有子域名；<span className="font-mono">#</span> 之后为注释。
+            除 Direct 外始终经 <ProxyTerm /> 走代理，用远程 DNS 解析；适合被墙但不在 gfwlist 里的网站
           </>
         }
       >
-        <FormField hintAbove label="直连域名" hint="除 Global 外始终直连，用本地 DNS 解析">
-          {(id) => (
-            <ListEditor
-              id={id}
-              lines={s.directDomains}
-              onChange={(directDomains) => props.onChange({ directDomains })}
-              placeholder={"example.cn\nintranet.example.com  # 公司内网"}
-              summary={domainSummary}
-              unit="个域名"
-            />
-          )}
-        </FormField>
-        <FormField hintAbove label="代理域名和 IP" hint="除 Direct 外始终走代理；适合被墙但不在 gfwlist 里的网站">
-          {(id) => (
-            <ListEditor
-              id={id}
-              lines={s.proxyRules}
-              onChange={(proxyRules) => props.onChange({ proxyRules })}
-              placeholder={"intercom.io\n203.0.113.0/24"}
-              summary={ruleSummary}
-              unit="项"
-            />
-          )}
-        </FormField>
+        <ListEditor
+          ariaLabel="代理域名和 IP"
+          lines={s.proxyRules}
+          onChange={(proxyRules) => props.onChange({ proxyRules })}
+          placeholder={"intercom.io\n203.0.113.0/24"}
+          allowIp
+        />
       </Panel>
     </>
+  );
+}
+
+function RuleCard(props: {
+  rule: RouteRule;
+  index: number;
+  /** Nodes and groups the rule can send traffic to. */
+  targets: Candidate[];
+  issues: Issue[];
+  expanded: boolean;
+  onToggle: () => void;
+  onChange: (r: RouteRule) => void;
+  onRemove: () => void;
+  sort: ReturnType<typeof useDragSort>;
+}) {
+  const { rule: r } = props;
+  const set = (patch: Partial<RouteRule>) => props.onChange({ ...r, ...patch });
+  const target = props.targets.find((c) => c.id === r.outbound);
+  const entries = r.lines.map((l) => l.replace(/(^|\s)#.*/, "").trim()).filter(Boolean);
+  const name = `规则 ${props.index + 1}`;
+  return (
+    <ItemCard
+      id={r.id}
+      expanded={props.expanded}
+      onToggle={props.onToggle}
+      issues={props.issues}
+      handle={<DragHandle label={name} {...props.sort.handleProps(r.id)} />}
+      rowRef={props.sort.rowRef(r.id)}
+      dragging={props.sort.dragging === r.id}
+      title={
+        <>
+          {name} → <span className="font-mono">{target ? target.tag || "未命名" : "未选择出口"}</span>
+        </>
+      }
+      meta={
+        <span className="font-mono">
+          {entries.length ? `${entries.slice(0, 3).join("、")}${entries.length > 3 ? ` 等 ${entries.length} 项` : ""}` : "还没有域名或 IP"}
+        </span>
+      }
+      actions={
+        <IconAction label={`删除${name}`} danger onClick={props.onRemove}>
+          <Trash2 />
+        </IconAction>
+      }
+    >
+      <IssueList issues={props.issues} />
+      <FormField label="出口" hint="匹配的流量经这个节点或代理组">
+        {(id) => (
+          <SimpleSelect
+            id={id}
+            value={r.outbound}
+            options={[
+              ...(target ? [] : [{ value: r.outbound, label: r.outbound ? "（已删除，请重新选择）" : "请选择…" }]),
+              ...props.targets.map((c) => ({ value: c.id, label: `${c.tag || "未命名"}（${c.kind}）` })),
+            ]}
+            onChange={(outbound) => set({ outbound })}
+            className="sm:w-1/2"
+          />
+        )}
+      </FormField>
+      <FormField label="域名和 IP">
+        {(id) => <ListEditor id={id} lines={r.lines} onChange={(lines) => set({ lines })} placeholder={"openai.com\nanthropic.com"} allowIp />}
+      </FormField>
+    </ItemCard>
   );
 }
 
@@ -975,8 +1146,6 @@ function TailnetCard(props: {
             lines={t.dnsDomains}
             onChange={(dnsDomains) => set({ dnsDomains })}
             placeholder="corp.example.com"
-            summary={domainSummary}
-            unit="个域名"
           />
         )}
       </FormField>
@@ -988,8 +1157,7 @@ function TailnetCard(props: {
             lines={t.routes}
             onChange={(routes) => set({ routes })}
             placeholder={"10.20.0.0/16\nnas.example.com"}
-            summary={ruleSummary}
-            unit="项"
+            allowIp
           />
         )}
       </FormField>
@@ -1600,6 +1768,22 @@ export default function App() {
     setExpanded((prev) => new Set(prev).add(n.id));
     setScrollTo(n.id);
   };
+  // First matching rule wins, so the order matters.
+  const ruleSort = useDragSort(
+    profile.settings.rules.map((r) => r.id),
+    (ids) => setProfile((p) => ({ ...p, settings: { ...p.settings, rules: ids.map((id) => p.settings.rules.find((r) => r.id === id)!) } })),
+  );
+  const ruleTargets = [...candidates.filter((c) => c.kind === "代理组"), ...candidates.filter((c) => c.kind === "节点")];
+  const addRule = () => {
+    const r = newRule();
+    setSettings({ rules: [...profile.settings.rules, r] });
+    setExpanded((prev) => new Set(prev).add(r.id));
+    setScrollTo(r.id);
+  };
+  const removeRule = (i: number) => {
+    const r = profile.settings.rules[i];
+    removeWithUndo(`规则 ${i + 1}`, (p) => ({ ...p, settings: { ...p.settings, rules: p.settings.rules.filter((x) => x.id !== r.id) } }));
+  };
   const addTailnet = () => {
     const tailnets = profile.settings.tailnets;
     const t = newTailnet({ tag: tailnets.length ? `ts${tailnets.length + 1}` : "ts" });
@@ -1898,7 +2082,7 @@ export default function App() {
                   <TabsTrigger key={t.id} value={t.id} className="px-2 text-[13px] sm:px-2.5">
                     {t.label}
                     {counts[t.id] !== undefined && (
-                      <span className="hidden rounded-full bg-muted px-1.5 text-[11px] leading-4 text-muted-foreground tabular-nums min-[420px]:inline">{counts[t.id]}</span>
+                      <Count n={counts[t.id]!} className="hidden min-[420px]:inline" />
                     )}
                     {state && <span className={`dot ${state}`} aria-label={state === "error" ? "有错误" : "有提醒"} />}
                   </TabsTrigger>
@@ -1969,8 +2153,11 @@ export default function App() {
                     {(id) => (
                       <SimpleSelect
                         id={id}
-                        value={profile.settings.proxyDefault}
-                        options={[{ value: "auto", label: "auto（全部节点自动测速）" }, ...profile.groups.map((g) => ({ value: g.id, label: g.tag }))]}
+                        value={proxyChoices(profile).some((c) => c.id === profile.settings.proxyDefault) ? profile.settings.proxyDefault : "auto"}
+                        options={[
+                          { value: "auto", label: "auto（全部节点自动测速）" },
+                          ...proxyChoices(profile).map((c) => ({ value: c.id, label: `${c.tag || "未命名"}（${c.kind}）` })),
+                        ]}
                         onChange={(proxyDefault) => setSettings({ proxyDefault })}
                         className="sm:w-1/2"
                       />
@@ -2008,7 +2195,48 @@ export default function App() {
               </>
             )}
 
-            {tab === "routing" && <RoutingCard settings={profile.settings} onChange={setSettings} />}
+            {tab === "routing" && (
+              <>
+                <RoutingCard
+                  settings={profile.settings}
+                  onChange={setSettings}
+                  rules={
+                    <>
+                      <ListHead
+                        title={<OrderedTitle n={2}>规则</OrderedTitle>}
+                        count={profile.settings.rules.length}
+                      >
+                        <Button onClick={addRule}>
+                          <Plus />
+                          添加规则
+                        </Button>
+                      </ListHead>
+                      <Intro>
+                        让匹配的流量走指定的节点或代理组，例如 AI 服务走美国节点。除 Direct 外始终生效，用远程 DNS 解析；多条规则从上到下第一条匹配的生效，拖动左侧手柄调整顺序。
+                      </Intro>
+                      {profile.settings.rules.length === 0 && <Empty>还没有规则。</Empty>}
+                      {profile.settings.rules.map((r, i) => (
+                        <RuleCard
+                          key={r.id}
+                          rule={r}
+                          index={i}
+                          targets={ruleTargets}
+                          issues={issuesFor(r.id)}
+                          expanded={expanded.has(r.id)}
+                          onToggle={() => toggle(r.id)}
+                          onChange={(next) => {
+                            setFocusId(r.id);
+                            setProfile((p) => ({ ...p, settings: { ...p.settings, rules: p.settings.rules.map((x) => (x.id === r.id ? next : x)) } }));
+                          }}
+                          onRemove={() => removeRule(i)}
+                          sort={ruleSort}
+                        />
+                      ))}
+                    </>
+                  }
+                />
+              </>
+            )}
 
             {tab === "tailscale" && (
               <>

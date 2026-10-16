@@ -1,4 +1,4 @@
-import type { Profile, ProxyGroup, ProxyNode, Settings, Tailnet } from "./types";
+import type { Profile, ProxyGroup, ProxyNode, RouteRule, Settings, Tailnet } from "./types";
 import { TEMPLATES } from "./templates";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -38,6 +38,7 @@ export const defaultSettings = (): Settings => ({
   clashSecret: randomSecret(),
   directDomains: [],
   proxyRules: [],
+  rules: [],
   tailnets: [],
   proxyDefault: "auto",
   listNodesInProxy: true,
@@ -69,6 +70,10 @@ export function newTailnet(partial: Partial<Tailnet> = {}): Tailnet {
     exitNode: "",
     ...partial,
   };
+}
+
+export function newRule(partial: Partial<RouteRule> = {}): RouteRule {
+  return { id: uid(), outbound: "", lines: [], ...partial };
 }
 
 export function newGroup(partial: Partial<ProxyGroup> = {}): ProxyGroup {

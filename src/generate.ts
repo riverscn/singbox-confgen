@@ -1,4 +1,4 @@
-import type { Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RemoteDnsProvider, Settings, Tailnet } from "./types";
+import type { Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RemoteDnsProvider, RouteRule, Settings, Tailnet } from "./types";
 import { ENDPOINT_TYPES, NEEDS_SERVER, NODE_TYPES, SECRET_FIELDS } from "./templates";
 
 type Json = Record<string, unknown>;
@@ -11,6 +11,9 @@ const CUSTOM_PROXY = ["gfwlist-custom-domains", "gfwlist-custom-ips"];
 const CN_SITE = "geosite-geolocation-cn";
 const CN_IP = "geoip-cn";
 const CUSTOM_DIRECT = "custom-direct-domains";
+const CUSTOM_DIRECT_IPS = "custom-direct-ips";
+const RULE_DOMAINS = "custom-rule-domains";
+const RULE_IPS = "custom-rule-ips";
 const PUBLIC_V6 = ["2000::/3"];
 const IPV6_CARRIERS = ["AAAA", "HTTPS", "SVCB"];
 const LOCAL_DOMAINS = {
@@ -31,12 +34,15 @@ const noPublicV6Interface: Json = { default_interface_address: PUBLIC_V6, invert
 
 const dnsTag = (t: Tailnet) => `${t.tag}-dns`;
 const proxyList = (s: Settings) => parseRuleList(s.proxyRules.join("\n"));
-const hasProxyDomains = (s: Settings) => proxyList(s).domains.length > 0;
+const directList = (s: Settings) => parseRuleList(s.directDomains.join("\n"));
+/** The rule-sets the direct list fills: its domains, and its IP prefixes when it has any. */
+const directSets = (s: Settings) => [CUSTOM_DIRECT, ...(directList(s).cidrs.length ? [CUSTOM_DIRECT_IPS] : [])];
+const hasProxyDomains = (s: Settings) => matchCount(proxyList(s).domains) > 0;
 const hasProxyRules = (s: Settings) => {
   const { domains, cidrs } = proxyList(s);
-  return domains.length + cidrs.length > 0;
+  return matchCount(domains) + cidrs.length > 0;
 };
-const hasDns = (t: Tailnet) => t.magicDns || parseDomainList(t.dnsDomains.join("\n")).domains.length > 0;
+const hasDns = (t: Tailnet) => t.magicDns || matchCount(parseDomainList(t.dnsDomains.join("\n")).domains) > 0;
 
 // ---------------------------------------------------------------------------
 // Input parsing
@@ -56,49 +62,155 @@ function parseCidr(text: string): string | null {
   return `${addr}/${Number(len)}`;
 }
 
+/**
+ * List entries: one per line, `#` starts a comment. Lines may also hold several entries separated
+ * by commas, except `domain_regex:` lines, where commas and `#` belong to the pattern unless the
+ * `#` follows a space.
+ */
 function cleanLines(text: string): { raw: string; line: string }[] {
-  return text
-    .split(/[\n,]/)
-    .map((raw) => ({ raw: raw.trim(), line: raw.replace(/#.*/, "").trim().toLowerCase() }))
-    .filter((x) => x.line);
+  return text.split("\n").flatMap((full) => {
+    const regex = /^\s*domain_regex:/.test(full);
+    const line = full.replace(regex ? /(^|\s)#.*/ : /#.*/, "").trim();
+    if (!line) return [];
+    return (regex ? [line] : line.split(",")).map((x) => ({ raw: x.trim(), line: x.trim() })).filter((x) => x.line);
+  });
 }
 
-const cleanDomain = (line: string) => line.replace(/^\*?\./, "").replace(/\.$/, "");
+/** sing-box domain matchers from a list, in the rule's field names. */
+export interface DomainMatch {
+  domain: string[];
+  domain_suffix: string[];
+  domain_keyword: string[];
+  domain_regex: string[];
+}
 
-/** Parse user input (one domain per line, `#` comments) into clean, de-duplicated suffixes. */
-export function parseDomainList(text: string): { domains: string[]; invalid: string[] } {
-  const domains: string[] = [];
-  const invalid: string[] = [];
-  for (const { raw, line } of cleanLines(text)) {
-    const d = cleanDomain(line);
-    if (!DOMAIN_RE.test(d)) invalid.push(raw);
-    else if (!domains.includes(d)) domains.push(d);
+const emptyMatch = (): DomainMatch => ({ domain: [], domain_suffix: [], domain_keyword: [], domain_regex: [] });
+
+export const matchCount = (m: DomainMatch) => m.domain.length + m.domain_suffix.length + m.domain_keyword.length + m.domain_regex.length;
+
+/** The non-empty matcher fields, to spread into a rule. */
+export const matchFields = (m: DomainMatch): Json => Object.fromEntries(Object.entries(m).filter(([, v]) => v.length));
+
+/** An entry may name the sing-box field it goes into; without one it is `domain_suffix` (or `ip_cidr`). */
+const PREFIX_RE = /^(domain|domain_suffix|domain_keyword|domain_regex|ip_cidr):\s*(.*)$/;
+
+/**
+ * Why sing-box would not take a `domain_regex`, or null. It compiles them with Go's RE2, which has
+ * no lookaround or backreferences (JavaScript would accept them), and matches them against the
+ * lowercased domain, so an uppercase letter outside an escape, class name or `(?P<` can never
+ * match unless the pattern has `(?i`.
+ */
+function regexProblem(pattern: string): string | null {
+  if (!pattern) return "正则为空";
+  if (/\(\?<?[=!]/.test(pattern)) return "sing-box 用的 RE2 正则不支持 (?=…) 这类环视";
+  if (/\\[1-9]|\\k</.test(pattern)) return "sing-box 用的 RE2 正则不支持反向引用";
+  const literals = pattern.replace(/\\[pP](\{[^}]*\}|[A-Za-z])|\\.|\[:\^?[a-z]+:\]|\(\?P</g, "");
+  if (/[A-Z]/.test(literals) && !pattern.includes("(?i")) return "域名在匹配前已转成小写，正则里的大写字母永远匹配不上；请改成小写";
+  try {
+    // RE2-only syntax JavaScript lacks: leading flags and `(?P<name>` groups.
+    new RegExp(pattern.replace(/^\(\?[imsU]+\)/, "").replace(/\(\?P</g, "(?<"));
+    return null;
+  } catch {
+    return "正则语法有误";
   }
-  return { domains, invalid };
 }
 
-/** Like parseDomainList, but lines may also be IPv4/IPv6 addresses or prefixes. */
-export function parseRuleList(text: string): { domains: string[]; cidrs: string[]; invalid: string[] } {
-  const domains: string[] = [];
+/** Prefixes from other tools, and what to write instead. */
+const FOREIGN_PREFIXES: Record<string, string> = {
+  full: "domain:",
+  keyword: "domain_keyword:",
+  regexp: "domain_regex:",
+  regex: "domain_regex:",
+  suffix: "domain_suffix:",
+  ip: "ip_cidr:",
+};
+
+/** Why a plain domain (no prefix, or after `domain:`/`domain_suffix:`) is not valid. */
+function domainProblem(d: string, allowIp: boolean): string {
+  if (!d) return "前缀后面缺少域名";
+  if (/^\*\./.test(d)) return `不支持通配符：只匹配子域名写 .${d.slice(2)}，连同它本身写 ${d.slice(2)}`;
+  if (d.includes("*")) return "不支持通配符，可以改用 domain_keyword: 或 domain_regex:";
+  if (/\s/.test(d)) return "一行只写一项，中间不能有空格";
+  if (/^[^:/]+:\d+$/.test(d)) return "不支持端口，去掉 :端口 即可";
+  if (/^[\d./]+$/.test(d) || /[:/]/.test(d)) {
+    if (!allowIp) return "这里只能填域名";
+    return d.includes("/") && !/^[\d.:a-f]+\/\d+$/i.test(d) ? "只填域名，不要带路径" : "IP 地址或网段格式不正确";
+  }
+  return "不是有效的域名";
+}
+
+/**
+ * One entry, written as sing-box takes it: a domain (`domain_suffix`), an IP or prefix
+ * (`ip_cidr`, where allowed), or a value after a field-name prefix. A suffix matches the domain
+ * and its subdomains, or only the subdomains when it starts with `.`. Domains and keywords are
+ * lowercased (sing-box matches against the lowercased domain).
+ */
+function parseEntry(line: string, allowIp: boolean): { field: keyof DomainMatch | "ip_cidr"; value: string } | { problem: string } {
+  const url = /^[a-z][a-z0-9+.-]*:\/\/([^/:?#]+)/i.exec(line);
+  if (url) return { problem: `只填域名，例如 ${url[1].toLowerCase()}` };
+  const m = PREFIX_RE.exec(line);
+  if (!m) {
+    const other = /^([a-z_-]+):(?!\/|\d+$)/i.exec(line);
+    if (other && !/^[\da-f:]+$/i.test(line.split("/")[0])) {
+      const instead = FOREIGN_PREFIXES[other[1].toLowerCase()];
+      return { problem: instead ? `前缀请用 ${instead}` : `不认识的前缀 ${other[1]}:` };
+    }
+  }
+  const field = m ? (m[1] as keyof DomainMatch | "ip_cidr") : null;
+  const value = m ? m[2].trim() : line;
+  if (field === "domain_regex") {
+    const problem = regexProblem(value);
+    return problem ? { problem } : { field, value };
+  }
+  const v = value.toLowerCase();
+  if (field === "domain_keyword") return /^[a-z0-9_.-]+$/.test(v) ? { field, value: v } : { problem: "关键字只能包含字母、数字和 . _ -" };
+  if (field === "ip_cidr" || (!field && parseCidr(v))) {
+    if (!allowIp) return { problem: "这里只能填域名" };
+    const cidr = parseCidr(v);
+    return cidr ? { field: "ip_cidr", value: cidr } : { problem: "IP 地址或网段格式不正确" };
+  }
+  const d = v.replace(/\.$/, "");
+  // Digits and dots only: an address that did not parse, not a domain.
+  if (/^[\d./]+$/.test(d)) return { problem: domainProblem(d, allowIp) };
+  const suffix = field !== "domain";
+  return DOMAIN_RE.test(suffix ? d.replace(/^\./, "") : d) ? { field: field ?? "domain_suffix", value: d } : { problem: domainProblem(d, allowIp) };
+}
+
+/** An entry the parser rejected, and why. */
+export interface InvalidEntry {
+  entry: string;
+  reason: string;
+}
+
+/** Parse a list (one entry per line, `#` comments) into clean, de-duplicated matchers. */
+function parseList(text: string, allowIp: boolean): { domains: DomainMatch; cidrs: string[]; invalid: InvalidEntry[] } {
+  const domains = emptyMatch();
   const cidrs: string[] = [];
-  const invalid: string[] = [];
+  const invalid: InvalidEntry[] = [];
   for (const { raw, line } of cleanLines(text)) {
-    const cidr = parseCidr(line);
-    if (cidr) {
-      if (!cidrs.includes(cidr)) cidrs.push(cidr);
-      continue;
+    const parsed = parseEntry(line, allowIp);
+    if ("problem" in parsed) invalid.push({ entry: raw, reason: parsed.problem });
+    else {
+      const list = parsed.field === "ip_cidr" ? cidrs : domains[parsed.field];
+      if (!list.includes(parsed.value)) list.push(parsed.value);
     }
-    // Looks like an address (digits and dots, or has ':' or '/') but did not parse as one.
-    if (/^[\d./]+$/.test(line) || /[:/]/.test(line)) {
-      invalid.push(raw);
-      continue;
-    }
-    const d = cleanDomain(line);
-    if (!DOMAIN_RE.test(d)) invalid.push(raw);
-    else if (!domains.includes(d)) domains.push(d);
   }
   return { domains, cidrs, invalid };
 }
+
+/** A list of domains only (no IPs). */
+export function parseDomainList(text: string): { domains: DomainMatch; invalid: InvalidEntry[] } {
+  const { domains, invalid } = parseList(text, false);
+  return { domains, invalid };
+}
+
+/** A list of domains and IPv4/IPv6 addresses or prefixes. */
+export function parseRuleList(text: string): { domains: DomainMatch; cidrs: string[]; invalid: InvalidEntry[] } {
+  return parseList(text, true);
+}
+
+/** "entry（reason）、…" for validation messages. */
+export const describeInvalid = (invalid: InvalidEntry[]) => invalid.map((x) => `${x.entry}（${x.reason}）`).join("、");
 
 /** JSON with `//` and `/* *\/` comments (outside strings). */
 export function parseJsonc(text: string): unknown {
@@ -162,29 +274,58 @@ export function tailnetEndpoint(t: Tailnet): { endpoint?: Json; error?: string }
 // ---------------------------------------------------------------------------
 // DNS
 
+/** A rule from the routing tab whose node or group exists, with its parsed entries. */
+interface BuiltRule {
+  rule: RouteRule;
+  tag: string;
+  domains: DomainMatch;
+  cidrs: string[];
+}
+
+/** Rules with a usable outbound and at least one valid entry; the rest are left out (validate says why). */
+function builtRules(s: Settings, tags: Map<string, string>): BuiltRule[] {
+  return s.rules.flatMap((rule) => {
+    const tag = tags.get(rule.outbound);
+    const { domains, cidrs } = parseRuleList(rule.lines.join("\n"));
+    return tag && matchCount(domains) + cidrs.length ? [{ rule, tag, domains, cidrs }] : [];
+  });
+}
+
+/** Rule-sets of domains always sent through a proxy (the proxy list, the rules), for DNS. */
+function proxiedSets(s: Settings, rules: BuiltRule[]): string[] {
+  return [
+    ...(hasProxyDomains(s) ? ["gfwlist-custom-domains"] : []),
+    ...(rules.some((r) => matchCount(r.domains)) ? [RULE_DOMAINS] : []),
+  ];
+}
+
+/** Rule-sets of IP prefixes listed to go through a proxy (the proxy list, the rules). */
+function listedIpSets(s: Settings, rules: BuiltRule[]): string[] {
+  return [...(proxyList(s).cidrs.length ? ["gfwlist-custom-ips"] : []), ...(rules.some((r) => r.cidrs.length) ? [RULE_IPS] : [])];
+}
+
+const oneOrList = (xs: string[]) => (xs.length === 1 ? xs[0] : xs);
+
 /**
  * Domains whose traffic the route rules send `direct` regardless of the resolved IP.
  * Mirrors the Direct / custom direct / GFWList / Non-CN route rules below.
  */
-function directByDomain(s: Settings): Json {
+function directByDomain(s: Settings, proxied: string[]): Json {
   return or([
     { clash_mode: "Direct" },
     and([{ clash_mode: "Global", invert: true }, { rule_set: CUSTOM_DIRECT }]),
     and([{ clash_mode: "GFWList" }, { rule_set: GFW, invert: true }]),
     and([
       { clash_mode: "Non-CN" },
-      ...(hasProxyDomains(s) ? [{ rule_set: "gfwlist-custom-domains", invert: true }] : []),
+      ...(proxied.length ? [{ rule_set: oneOrList(proxied), invert: true }] : []),
       s.steam ? or([{ rule_set: CN_SITE }, { domain_suffix: ["steamcontent.com"] }]) : { rule_set: CN_SITE },
     ]),
   ]);
 }
 
-/** Custom proxy domains, outside Direct mode and unless also listed as direct. */
-const proxiedByDomain: Json = and([
-  { clash_mode: "Direct", invert: true },
-  { rule_set: CUSTOM_DIRECT, invert: true },
-  { rule_set: "gfwlist-custom-domains" },
-]);
+/** Custom proxy and rule domains, outside Direct mode and unless also listed as direct. */
+const proxiedByDomain = (proxied: string[]): Json =>
+  and([{ clash_mode: "Direct", invert: true }, { rule_set: CUSTOM_DIRECT, invert: true }, { rule_set: oneOrList(proxied) }]);
 
 /**
  * DNS policy:
@@ -197,20 +338,21 @@ const proxiedByDomain: Json = and([
  *   Connections an app makes to IPv6 on its own are not blocked; they are routed by sniffed domain.
  * - Without a public IPv6 address locally, AAAA for direct traffic is empty.
  */
-function dnsRules(s: Settings): Json[] {
+function dnsRules(s: Settings, rules: BuiltRule[]): Json[] {
   const ecs = s.clientSubnet.trim() ? { client_subnet: s.clientSubnet.trim() } : {};
-  const direct = directByDomain(s);
+  const proxied = proxiedSets(s, rules);
+  const direct = directByDomain(s, proxied);
   const tailnetRules: Json[] = [
     ...s.tailnets.flatMap((t) => {
       const { domains } = parseDomainList(t.dnsDomains.join("\n"));
-      return domains.length ? [{ domain_suffix: domains, action: "route", server: dnsTag(t) }] : [];
+      return matchCount(domains) ? [{ ...matchFields(domains), action: "route", server: dnsTag(t) }] : [];
     }),
     ...s.tailnets.filter((t) => t.magicDns).map((t) => ({ preferred_by: dnsTag(t), action: "route", server: dnsTag(t) })),
   ];
-  const customProxy: Json[] = hasProxyDomains(s)
+  const customProxy: Json[] = proxied.length
     ? [
-        and([{ query_type: IPV6_CARRIERS }, proxiedByDomain], { action: "predefined", rcode: "NOERROR" }),
-        { ...proxiedByDomain, action: "route", server: "remote" },
+        and([{ query_type: IPV6_CARRIERS }, proxiedByDomain(proxied)], { action: "predefined", rcode: "NOERROR" }),
+        { ...proxiedByDomain(proxied), action: "route", server: "remote" },
       ]
     : [];
   return [
@@ -219,7 +361,7 @@ function dnsRules(s: Settings): Json[] {
     { ...LOCAL_DOMAINS, action: "route", server: "local" },
     ...(s.steam ? [{ domain: ["lancache.steamcontent.com"], action: "route", server: "local" }] : []),
 
-    // Explicit proxy list.
+    // Explicit proxy list and rules.
     ...customProxy,
 
     // Direct traffic.
@@ -304,15 +446,16 @@ function dnsServers(s: Settings): Json[] {
 // ---------------------------------------------------------------------------
 // Route
 
-function routeRules(s: Settings): Json[] {
+function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
   const gfwAll = [...GFW, ...GFW_IPS];
+  const listedIps = listedIpSets(s, rules);
   const tailnetTags = s.tailnets.map((t) => t.tag);
   const tailnetExtra = s.tailnets.flatMap((t) => {
     const { domains, cidrs } = parseRuleList(t.routes.join("\n"));
-    if (!domains.length && !cidrs.length) return [];
+    if (!matchCount(domains) && !cidrs.length) return [];
     return [
       {
-        ...(domains.length ? { domain_suffix: domains } : {}),
+        ...matchFields(domains),
         ...(cidrs.length ? { ip_cidr: cidrs } : {}),
         action: "route",
         outbound: t.tag,
@@ -321,6 +464,7 @@ function routeRules(s: Settings): Json[] {
   });
   return [
     // No public IPv6 locally: refuse direct CN IPv6 before the handshake so apps fall back to IPv4.
+    // Addresses listed in the proxy list or a rule are meant to go through a proxy, so they pass.
     and(
       [
         { network: ["tcp", "udp"], ip_version: 6, ip_cidr: PUBLIC_V6 },
@@ -328,6 +472,14 @@ function routeRules(s: Settings): Json[] {
         noPublicV6Interface,
         ...(tailnetTags.length ? [{ preferred_by: tailnetTags, invert: true }] : []),
         { port: 53, invert: true },
+        // Unless the direct list, which routing checks first, also has them.
+        ...(listedIps.length
+          ? [
+              directList(s).cidrs.length
+                ? or([{ rule_set: oneOrList(listedIps), invert: true }, { rule_set: CUSTOM_DIRECT_IPS }])
+                : { rule_set: oneOrList(listedIps), invert: true },
+            ]
+          : []),
         or([{ clash_mode: "Non-CN" }, and([{ clash_mode: "GFWList" }, { rule_set: gfwAll, invert: true }])]),
       ],
       { action: "reject", method: "default", no_drop: true },
@@ -342,7 +494,13 @@ function routeRules(s: Settings): Json[] {
     { ...LOCAL_DOMAINS, action: "route", outbound: "direct" },
     { ip_is_private: true, action: "route", outbound: "direct" },
     { clash_mode: "Direct", action: "route", outbound: "direct" },
-    and([{ clash_mode: "Global", invert: true }, { rule_set: CUSTOM_DIRECT }], { action: "route", outbound: "direct" }),
+    and([{ clash_mode: "Global", invert: true }, { rule_set: oneOrList(directSets(s)) }], { action: "route", outbound: "direct" }),
+    ...rules.map((r) => ({
+      ...matchFields(r.domains),
+      ...(r.cidrs.length ? { ip_cidr: r.cidrs } : {}),
+      action: "route",
+      outbound: r.tag,
+    })),
     ...(hasProxyRules(s) ? [{ rule_set: CUSTOM_PROXY, action: "route", outbound: "proxy" }] : []),
     and([{ clash_mode: "GFWList" }, { rule_set: gfwAll, invert: true }], { action: "route", outbound: "direct" }),
     and(
@@ -372,8 +530,8 @@ const remoteRuleSet = (tag: string, url: string): Json => ({
 // Never-matching body for empty inline rule-sets.
 const NEVER = [{ domain_regex: ["a^"] }];
 
-function ruleSets(s: Settings): Json[] {
-  const direct = parseDomainList(s.directDomains.join("\n")).domains;
+function ruleSets(s: Settings, rules: BuiltRule[]): Json[] {
+  const { domains: direct, cidrs: directIps } = directList(s);
   const proxy = proxyList(s);
   return [
     remoteRuleSet(CN_IP, "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"),
@@ -405,9 +563,19 @@ function ruleSets(s: Settings): Json[] {
         },
       ],
     },
-    { type: "inline", tag: "gfwlist-custom-domains", rules: proxy.domains.length ? [{ domain_suffix: proxy.domains }] : NEVER },
+    { type: "inline", tag: "gfwlist-custom-domains", rules: matchCount(proxy.domains) ? [matchFields(proxy.domains)] : NEVER },
     { type: "inline", tag: "gfwlist-custom-ips", rules: proxy.cidrs.length ? [{ ip_cidr: proxy.cidrs }] : NEVER },
-    { type: "inline", tag: CUSTOM_DIRECT, rules: direct.length ? [{ domain_suffix: direct }] : NEVER },
+    { type: "inline", tag: CUSTOM_DIRECT, rules: matchCount(direct) ? [matchFields(direct)] : NEVER },
+    // Only for the direct route rule: DNS goes by domain, and the reject rule still refuses CN IPv6 here.
+    ...(directIps.length ? [{ type: "inline", tag: CUSTOM_DIRECT_IPS, rules: [{ ip_cidr: directIps }] }] : []),
+    // Only for the IPv6 reject rule: the prefixes of all rules, which it lets through.
+    ...(listedIpSets(s, rules).includes(RULE_IPS)
+      ? [{ type: "inline", tag: RULE_IPS, rules: [{ ip_cidr: [...new Set(rules.flatMap((r) => r.cidrs))] }] }]
+      : []),
+    // Only for DNS: the domains of all rules, resolved like the proxy list.
+    ...(proxiedSets(s, rules).includes(RULE_DOMAINS)
+      ? [{ type: "inline", tag: RULE_DOMAINS, rules: rules.filter((r) => matchCount(r.domains)).map((r) => matchFields(r.domains)) }]
+      : []),
   ];
 }
 
@@ -488,6 +656,19 @@ function groupOutbound(g: ProxyGroup, tags: Map<string, string>): Json {
 }
 
 /**
+ * What `proxy` offers besides `auto`, in its order: the groups, each grouped node when nodes are
+ * listed one by one, and the tailnets used as a proxy. The default choice is one of these.
+ */
+export function proxyChoices(profile: Profile): { id: string; tag: string; kind: "代理组" | "节点" | "tailnet" }[] {
+  const s = profile.settings;
+  return [
+    ...profile.groups.map((g) => ({ id: g.id, tag: g.tag, kind: "代理组" as const })),
+    ...(s.listNodesInProxy ? profile.nodes.filter((n) => n.inGroups).map((n) => ({ id: n.id, tag: n.tag, kind: "节点" as const })) : []),
+    ...s.tailnets.filter((t) => t.asProxy).map((t) => ({ id: t.id, tag: t.tag, kind: "tailnet" as const })),
+  ];
+}
+
+/**
  * `proxy` is the single entry point for proxied traffic, the remote DNS and rule-set downloads; it
  * offers `auto` (every grouped node, fastest wins), the user's groups, and optionally each node.
  */
@@ -497,7 +678,9 @@ function outbounds(profile: Profile, nodes: BuiltNode[]): Json[] {
   const viaTailnet = s.tailnets.filter((t) => t.asProxy).map((t) => t.tag);
   const tags = memberTags(profile, nodes);
   const groups = profile.groups.filter((g) => tags.has(g.id)).map((g) => groupOutbound(g, tags));
-  const proxyDefault = s.proxyDefault !== "auto" && tags.has(s.proxyDefault) ? tags.get(s.proxyDefault)! : "auto";
+  // Falls back to auto when the choice is gone or no longer offered (e.g. nodes stopped being listed).
+  const offered = proxyChoices(profile).some((c) => c.id === s.proxyDefault);
+  const proxyDefault = offered && tags.has(s.proxyDefault) ? tags.get(s.proxyDefault)! : "auto";
   return [
     {
       type: "selector",
@@ -530,6 +713,7 @@ export function generateConfig(profile: Profile): Json {
     const { object, endpoint } = nodeObject(node);
     return object ? [{ node, object, endpoint: !!endpoint }] : [];
   });
+  const rules = builtRules(s, memberTags(profile, nodes));
   const endpoints = [
     ...s.tailnets.map((t) => tailnetEndpoint(t).endpoint).filter((e): e is Json => !!e),
     ...nodes.filter((x) => x.endpoint).map((x) => x.object),
@@ -539,7 +723,7 @@ export function generateConfig(profile: Profile): Json {
     log: { level: "info", timestamp: true },
     dns: {
       servers: dnsServers(s),
-      rules: dnsRules(s),
+      rules: dnsRules(s, rules),
       final: "remote",
       reverse_mapping: true,
     },
@@ -548,8 +732,8 @@ export function generateConfig(profile: Profile): Json {
     inbounds: [tunInbound(s)],
     outbounds: outbounds(profile, nodes),
     route: {
-      rules: routeRules(s),
-      rule_set: ruleSets(s),
+      rules: routeRules(s, rules),
+      rule_set: ruleSets(s, rules),
       final: "proxy",
       auto_detect_interface: true,
       default_http_client: "rule-set-download",
@@ -669,9 +853,9 @@ export function validate(profile: Profile): Issue[] {
       if ("exit_node" in (parseJsonc(t.endpoint) as Json)) warn(at, "端点 JSON 里的 exit_node 不会生效，请填在「出口节点」里");
     }
     const dns = parseDomainList(t.dnsDomains.join("\n"));
-    if (dns.invalid.length) err(at, `分域 DNS 域名格式不正确：${dns.invalid.join("、")}`);
+    if (dns.invalid.length) err(at, `分域 DNS 域名格式不正确：${describeInvalid(dns.invalid)}`);
     const routes = parseRuleList(t.routes.join("\n"));
-    if (routes.invalid.length) err(at, `额外路由格式不正确：${routes.invalid.join("、")}`);
+    if (routes.invalid.length) err(at, `额外路由格式不正确：${describeInvalid(routes.invalid)}`);
   }
   const groupIds = new Set(profile.groups.map((g) => g.id));
   const usable = usableGroups(profile.groups, new Set([...profile.nodes.map((n) => n.id), ...s.tailnets.map((t) => t.id)]));
@@ -687,6 +871,18 @@ export function validate(profile: Profile): Issue[] {
       if (g.tolerance !== null && (!Number.isInteger(g.tolerance) || g.tolerance < 0)) err(at, "容差必须是非负整数（毫秒）");
     }
   }
+  s.rules.forEach((r, i) => {
+    const at: Where = { section: "routing", id: r.id, label: `规则 ${i + 1}` };
+    const group = profile.groups.find((g) => g.id === r.outbound);
+    const node = profile.nodes.find((n) => n.id === r.outbound);
+    const { domains, cidrs, invalid } = parseRuleList(r.lines.join("\n"));
+    if (invalid.length) err(at, `域名或 IP 格式不正确：${describeInvalid(invalid)}`);
+    else if (!matchCount(domains) && !cidrs.length) warn(at, "还没有填写域名或 IP，暂不写入配置");
+    if (!r.outbound) warn(at, "还没有选择出口，暂不写入配置");
+    else if (!group && !node) warn(at, "出口的节点或代理组已删除，暂不写入配置");
+    else if (node && nodeObject(node).error) warn(at, `节点「${node.tag}」的配置有错误，暂不写入配置`);
+    else if (group && !usable.has(group.id)) warn(at, `代理组「${group.tag}」还是空的，暂不写入配置`);
+  });
   // Groups containing each other (directly or through other groups) would never resolve.
   const inCycle = new Set<string>();
   const visit = (id: string, path: string[]) => {
@@ -719,10 +915,10 @@ export function validate(profile: Profile): Issue[] {
 
   const subnet = s.clientSubnet.trim();
   if (subnet && !parseCidr(subnet.toLowerCase())) err(SETTINGS, `ECS 网段格式不正确：${subnet}`);
-  const direct = parseDomainList(s.directDomains.join("\n"));
-  if (direct.invalid.length) err(ROUTING, `直连域名格式不正确：${direct.invalid.join("、")}`);
+  const direct = directList(s);
+  if (direct.invalid.length) err(ROUTING, `直连域名或 IP 格式不正确：${describeInvalid(direct.invalid)}`);
   const proxy = parseRuleList(s.proxyRules.join("\n"));
-  if (proxy.invalid.length) err(ROUTING, `代理域名或 IP 格式不正确：${proxy.invalid.join("、")}`);
+  if (proxy.invalid.length) err(ROUTING, `代理域名或 IP 格式不正确：${describeInvalid(proxy.invalid)}`);
   if (s.clashController.trim() && !s.clashSecret) warn(SETTINGS, "Clash API 已开启但没有设置 secret");
   if (s.remoteDns.provider === "custom") {
     const { error } = customDnsServer(s.remoteDns.custom);

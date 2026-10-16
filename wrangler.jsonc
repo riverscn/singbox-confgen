@@ -11,5 +11,8 @@
     "not_found_handling": "single-page-application"
   },
   "workers_dev": true,
-  "preview_urls": true
+  "preview_urls": true,
+  // Required by `wrangler preview`, which Workers Builds runs for non-main branches; empty means
+  // a Preview uses the settings above.
+  "previews": {}
 }

@@ -4,7 +4,7 @@
 
 - 需要 sing-box **1.14** 及以上（Apple 平台的 SFM/SFI、Android 的 SFA，或 Linux/Windows 命令行版）。
 - 没有后端，运行时不发出任何网络请求；设置只保存在当前浏览器的 localStorage 里，可以保存多套配置。
-- 可以从现有的 sing-box 配置（例如客户端里正在用的 `config.json`）导入节点和 Tailscale 设置；DNS 和分流规则由本工具生成。下载的 `config.json` 本身也能再导入回来。
+- 可以从现有的 sing-box 配置（例如客户端里正在用的 `config.json`）导入节点和 Tailscale 设置，也可以从 Clash（mihomo）的 YAML 配置导入节点和代理组；DNS 和分流规则由本工具生成。下载的 `config.json` 本身也能再导入回来。
 - 分流策略是一套固定、经过实测的规则（四种模式：GFWList、Non-CN、Global、Direct），设计理由见 [DESIGN.md](DESIGN.md)。需要深度定制时，直接修改生成的 JSON。
 
 ## 可以设置什么
@@ -81,6 +81,7 @@ git push --follow-tags
 - `src/types.ts`：设置的数据模型；`src/defaults.ts`：默认值；`src/templates.ts`：节点协议模板。
 - `src/legacy.ts`：把旧版（表单）保存的服务器迁移为 JSON 节点。
 - `src/importer.ts`：从现有 sing-box 配置导入节点和 Tailscale。
+- `src/clash.ts`：从 Clash（mihomo）配置导入节点和代理组。
 - `src/App.tsx`：界面；`src/storage.ts`：本地保存和导入时的兼容处理。
 - `test/generate.test.ts`：
   - 用一份“个人配置”还原蓝本（`test/fixtures/tiger-baseline.json`，已匿名化）的非 DNS 部分；

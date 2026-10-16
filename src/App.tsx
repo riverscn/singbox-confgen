@@ -4,7 +4,7 @@ import { TEMPLATES } from "./templates";
 import { REMOTE_DNS, generateConfig, nodeObject, parseDomainList, parseRuleList, tailnetEndpoint, validate, type Issue } from "./generate";
 import { defaultSettings, freshTag, newGroup, newNode, newTailnet, randomSecret } from "./defaults";
 import { clearStore, defaultStore, loadStore, newSavedProfile, saveStore, type Store } from "./storage";
-import { fitImport, importSingBoxConfig, type ImportResult } from "./importer";
+import { fitImport, importConfig as readImport, type ImportResult } from "./importer";
 import { useDialogs } from "./dialog";
 import { CodeEditor } from "./code-editor";
 import { useDragSort } from "./drag-sort";
@@ -22,7 +22,7 @@ import {
   Copy,
   CopyPlus,
   Download,
-  Ellipsis,
+  FolderCog,
   Eye,
   EyeOff,
   FileUp,
@@ -1249,7 +1249,7 @@ function StartPage(props: {
               </>
             }
           >
-            从协议模板添加，或者直接导入客户端里正在用的配置：节点和 Tailscale 原样带过来，DNS 和分流按这里的策略重写。
+            从协议模板添加，或者直接导入客户端里正在用的配置（sing-box 的 JSON 或 Clash 的 YAML）：节点、代理组和 Tailscale 带过来，DNS 和分流按这里的策略重写。
             {!props.nodesReady && "现在还是示例节点。"}
           </Step>
           <Step
@@ -1616,7 +1616,7 @@ export default function App() {
   const importConfig = async (file: File) => {
     let result: ImportResult;
     try {
-      result = importSingBoxConfig(await file.text());
+      result = readImport(await file.text());
     } catch (e) {
       await dialogs.alert("导入失败", (e as Error).message);
       return;
@@ -1636,7 +1636,7 @@ export default function App() {
       />
     );
     const ok = await dialogs.confirm(`新建配置「${name}」`, {
-      message: `从 ${file.name} 导入节点、Tailscale 和代理组；DNS 和分流由本工具的策略生成，其他设置用默认值。当前配置「${active.name}」不受影响。`,
+      message: `从 ${file.name} 导入${["节点", ...(groups.length ? ["代理组"] : []), ...(tailnets.length ? ["Tailscale"] : [])].join("、")}；DNS 和分流由本工具的策略生成，其他设置用默认值。当前配置「${active.name}」不受影响。`,
       content,
       confirmLabel: "新建",
     });
@@ -1748,10 +1748,13 @@ export default function App() {
 
   const manageMenu = (
     <DropdownMenu>
-      <DropdownMenuTrigger render={<Button variant="outline" size="icon" aria-label="管理配置" />}>
-        <Ellipsis />
+      {/* A labelled button with a chevron: a bare "…" next to the picker was easy to miss. */}
+      <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="gap-1 px-2" aria-label="管理配置" />}>
+        <FolderCog />
+        <span className="hidden sm:inline">管理</span>
+        <ChevronDown className="opacity-60" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuGroup>
           <DropdownMenuLabel>配置「{active.name}」</DropdownMenuLabel>
           <DropdownMenuItem
@@ -1790,7 +1793,7 @@ export default function App() {
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => fileInput.current?.click()}>
-          <FileUp />从 sing-box 配置新建…
+          <FileUp />从 sing-box / Clash 配置新建…
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -1876,7 +1879,7 @@ export default function App() {
       <input
         ref={fileInput}
         type="file"
-        accept="application/json,.json"
+        accept="application/json,.json,application/yaml,.yaml,.yml"
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -1930,7 +1933,7 @@ export default function App() {
 
             {tab === "nodes" && (
               <>
-                <Intro>每个节点是一段 sing-box 出站配置，可以按协议模板新加，也可以从现有的 sing-box 配置新建一套。拖动左侧手柄调整顺序，客户端里按此顺序显示。</Intro>
+                <Intro>每个节点是一段 sing-box 出站配置，可以按协议模板新加，也可以从现有的 sing-box 或 Clash 配置新建一套。拖动左侧手柄调整顺序，客户端里按此顺序显示。</Intro>
                 <ListHead title="节点" count={profile.nodes.length}>
                   <Button variant="ghost" onClick={() => fileInput.current?.click()}>
                     <FileUp />
@@ -2067,7 +2070,7 @@ export default function App() {
               {errors.length
                 ? "有错误时 sing-box 可能无法加载这份配置。点击条目跳到对应位置。"
                 : examplesLeft
-                  ? "节点还是模板里的示例，需要换成你自己的服务器，或从现有的 sing-box 配置新建一套。"
+                  ? "节点还是模板里的示例，需要换成你自己的服务器，或从现有的 sing-box、Clash 配置新建一套。"
                   : warnings.length
                   ? "可以生成，但建议看一下这些提醒。点击条目跳到对应位置。"
                   : "没有发现问题，可以导入客户端。"}

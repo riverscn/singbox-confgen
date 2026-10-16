@@ -46,14 +46,16 @@ describe("importing an existing sing-box config", () => {
     const profile = sample(name);
     const config = generateConfig(profile) as any;
     const imported = importSingBoxConfig(JSON.stringify(config));
-    // proxy's default and node listing are settings of ours, not imported: map them across by tag.
-    const defaultTag = profile.groups.find((g) => g.id === profile.settings.proxyDefault)?.tag;
-    const proxyDefault = imported.groups.find((g) => g.tag === defaultTag)?.id ?? "auto";
+    // proxy's default, node listing and rules are settings of ours, not imported: map them across by tag.
+    const tagOf = (id: string) => [...profile.groups, ...profile.nodes].find((x) => x.id === id)?.tag;
+    const idOf = (tag: string | undefined) => [...imported.groups, ...imported.nodes].find((x) => x.tag === tag)?.id;
+    const proxyDefault = idOf(tagOf(profile.settings.proxyDefault)) ?? "auto";
+    const rules = profile.settings.rules.map((r) => ({ ...r, outbound: idOf(tagOf(r.outbound)) ?? "" }));
     const rebuilt = generateConfig({
       ...profile,
       nodes: imported.nodes,
       groups: imported.groups,
-      settings: { ...profile.settings, tailnets: imported.tailnets, proxyDefault },
+      settings: { ...profile.settings, tailnets: imported.tailnets, proxyDefault, rules },
     }) as any;
     expect(normalize(rebuilt.outbounds)).toEqual(normalize(config.outbounds));
     expect(normalize(rebuilt.endpoints)).toEqual(normalize(config.endpoints));

@@ -17,6 +17,10 @@
 
 自定义代理域名和 IP 在除 Direct 以外的模式下始终走代理（也写入 `gfwlist-custom-domains`/`gfwlist-custom-ips`，所以 GFWList 模式原有的判断照样生效）；DNS 上按走代理处理（远程解析、只给 A）。同一个域名同时出现在两个列表里时，直连优先。
 
+规则：每条规则是一组域名/IP 加一个出口（任一节点或代理组），生成为一条 `route` 规则，指向该出口。除 Direct 外始终生效，位置在自定义直连之后、自定义代理之前，多条规则按列表顺序第一条匹配的生效。规则里的域名另放进 `custom-rule-domains`（只给 DNS 用），DNS 上和代理域名一样处理（远程解析、只给 A）；远程 DNS 仍经 `proxy` 访问，不经规则自己的出口。出口未选、已删除或是空代理组，或者没有有效条目时，这条规则不写入配置，并给出提醒。
+
+所有域名列表（直连、代理、tailnet 的分域 DNS 和额外路由）的写法与 sing-box 一致，不另设语法：每行一项，不加前缀时按 `domain_suffix` 匹配（`example.com` 同时匹配子域名，`.example.com` 只匹配子域名），IP 和网段按 `ip_cidr`；也可以用字段名作前缀，写成 `domain:`、`domain_suffix:`、`domain_keyword:`、`domain_regex:`、`ip_cidr:`。正则按 Go RE2 校验（不支持环视和反向引用）；sing-box 拿小写后的域名去匹配正则，所以正则里出现大写字母会被判为错误（除非写了 `(?i)`）。`domain_regex:` 行里的逗号和 `#` 属于正则本身，注释要用空格隔开的 ` #`。
+
 ## 2. DNS 策略
 
 **直连的流量只用本地 DNS**（网络下发的 DNS），不使用国内 DoH。
@@ -46,6 +50,7 @@
 **直连流量的 IPv6 照常使用**，但本机没有公网 IPv6 时（只有 IPv4 的网络）：
 - 直连域名的 AAAA 返回空；
 - 在握手前（pre-match）拒绝直连的国内 IPv6，让应用干净地回退到 IPv4。
+  - 代理列表和规则里明确写出的 IP 段不在此列（两种模式都是）：写进去就说明要走代理，交给后面的规则处理。规则的 IP 段为此放进 `custom-rule-ips`（只给这条规则用）。放行后这类 IPv6 连接经节点出去，要求节点所在服务器能访问 IPv6，否则会在节点那边失败，而不是立即被拒。
 
 这两条依赖 `default_interface_address`。文档写的是只支持 Linux、Windows、macOS，但：
 - 源码在拿不到网卡地址时判定为“不匹配”，而规则是反着用的，所以会按“没有 IPv6”处理，往安全的方向走（只用 IPv4，不会打不开网站）；
@@ -72,8 +77,8 @@
 | 端点 JSON（可写注释） | `endpoints` 中的一项，`type` 和 `tag` 由生成器填写 |
 | MagicDNS | `<标签>-dns` 服务器 + `preferred_by` DNS 规则 |
 | 使用 tailnet 的默认 DNS | DNS 服务器上的 `accept_default_resolvers` |
-| 分域 DNS 域名 | `domain_suffix` → `<标签>-dns`，放在所有 DNS 规则最前 |
-| 额外路由 | `domain_suffix`/`ip_cidr` → 端点 |
+| 分域 DNS 域名 | 域名匹配 → `<标签>-dns`，放在所有 DNS 规则最前 |
+| 额外路由 | 域名匹配/`ip_cidr` → 端点 |
 | 作为代理出口 | 端点加入 `proxy` 选择器（不进 `auto`）；「出口节点」字段是 `exit_node` 的唯一来源（端点 JSON 里的会被忽略并提醒），导入时端点里的 `exit_node` 会提取到这个字段。字段只在开关打开（或已有值）时显示 |
 
 `preferred_by` 路由规则和“拒绝直连国内 IPv6”规则里对 tailnet 的排除，都由生成器自动处理。

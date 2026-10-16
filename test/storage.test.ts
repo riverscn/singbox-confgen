@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { normalizeStore } from "../src/storage";
 
 describe("normalizeStore", () => {
+  it("defaults rules for profiles saved before them, and fills in missing fields", () => {
+    const old = normalizeStore({ version: 2, nodes: [], settings: {} });
+    expect(old.profiles[0].profile.settings.rules).toEqual([]);
+    const [r] = normalizeStore({ version: 2, nodes: [], settings: { rules: [{ outbound: "n1" }] } }).profiles[0].profile.settings.rules;
+    expect(r).toMatchObject({ outbound: "n1", lines: [] });
+    expect(r.id).toMatch(/\w+/);
+  });
+
   it("turns a single saved profile (before multiple profiles) into a store", () => {
     const store = normalizeStore({ version: 2, nodes: [{ tag: "a", body: "{}" }], settings: { directDomains: ["x.example"] } });
     expect(store.profiles).toHaveLength(1);

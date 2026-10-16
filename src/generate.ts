@@ -11,6 +11,7 @@ const CUSTOM_PROXY = ["gfwlist-custom-domains", "gfwlist-custom-ips"];
 const CN_SITE = "geosite-geolocation-cn";
 const CN_IP = "geoip-cn";
 const CUSTOM_DIRECT = "custom-direct-domains";
+const CUSTOM_DIRECT_IPS = "custom-direct-ips";
 const RULE_DOMAINS = "custom-rule-domains";
 const RULE_IPS = "custom-rule-ips";
 const PUBLIC_V6 = ["2000::/3"];
@@ -33,6 +34,9 @@ const noPublicV6Interface: Json = { default_interface_address: PUBLIC_V6, invert
 
 const dnsTag = (t: Tailnet) => `${t.tag}-dns`;
 const proxyList = (s: Settings) => parseRuleList(s.proxyRules.join("\n"));
+const directList = (s: Settings) => parseRuleList(s.directDomains.join("\n"));
+/** The rule-sets the direct list fills: its domains, and its IP prefixes when it has any. */
+const directSets = (s: Settings) => [CUSTOM_DIRECT, ...(directList(s).cidrs.length ? [CUSTOM_DIRECT_IPS] : [])];
 const hasProxyDomains = (s: Settings) => matchCount(proxyList(s).domains) > 0;
 const hasProxyRules = (s: Settings) => {
   const { domains, cidrs } = proxyList(s);
@@ -468,7 +472,14 @@ function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
         noPublicV6Interface,
         ...(tailnetTags.length ? [{ preferred_by: tailnetTags, invert: true }] : []),
         { port: 53, invert: true },
-        ...(listedIps.length ? [{ rule_set: oneOrList(listedIps), invert: true }] : []),
+        // Unless the direct list, which routing checks first, also has them.
+        ...(listedIps.length
+          ? [
+              directList(s).cidrs.length
+                ? or([{ rule_set: oneOrList(listedIps), invert: true }, { rule_set: CUSTOM_DIRECT_IPS }])
+                : { rule_set: oneOrList(listedIps), invert: true },
+            ]
+          : []),
         or([{ clash_mode: "Non-CN" }, and([{ clash_mode: "GFWList" }, { rule_set: gfwAll, invert: true }])]),
       ],
       { action: "reject", method: "default", no_drop: true },
@@ -483,7 +494,7 @@ function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
     { ...LOCAL_DOMAINS, action: "route", outbound: "direct" },
     { ip_is_private: true, action: "route", outbound: "direct" },
     { clash_mode: "Direct", action: "route", outbound: "direct" },
-    and([{ clash_mode: "Global", invert: true }, { rule_set: CUSTOM_DIRECT }], { action: "route", outbound: "direct" }),
+    and([{ clash_mode: "Global", invert: true }, { rule_set: oneOrList(directSets(s)) }], { action: "route", outbound: "direct" }),
     ...rules.map((r) => ({
       ...matchFields(r.domains),
       ...(r.cidrs.length ? { ip_cidr: r.cidrs } : {}),
@@ -520,7 +531,7 @@ const remoteRuleSet = (tag: string, url: string): Json => ({
 const NEVER = [{ domain_regex: ["a^"] }];
 
 function ruleSets(s: Settings, rules: BuiltRule[]): Json[] {
-  const direct = parseDomainList(s.directDomains.join("\n")).domains;
+  const { domains: direct, cidrs: directIps } = directList(s);
   const proxy = proxyList(s);
   return [
     remoteRuleSet(CN_IP, "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"),
@@ -555,6 +566,8 @@ function ruleSets(s: Settings, rules: BuiltRule[]): Json[] {
     { type: "inline", tag: "gfwlist-custom-domains", rules: matchCount(proxy.domains) ? [matchFields(proxy.domains)] : NEVER },
     { type: "inline", tag: "gfwlist-custom-ips", rules: proxy.cidrs.length ? [{ ip_cidr: proxy.cidrs }] : NEVER },
     { type: "inline", tag: CUSTOM_DIRECT, rules: matchCount(direct) ? [matchFields(direct)] : NEVER },
+    // Only for the direct route rule: DNS goes by domain, and the reject rule still refuses CN IPv6 here.
+    ...(directIps.length ? [{ type: "inline", tag: CUSTOM_DIRECT_IPS, rules: [{ ip_cidr: directIps }] }] : []),
     // Only for the IPv6 reject rule: the prefixes of all rules, which it lets through.
     ...(listedIpSets(s, rules).includes(RULE_IPS)
       ? [{ type: "inline", tag: RULE_IPS, rules: [{ ip_cidr: [...new Set(rules.flatMap((r) => r.cidrs))] }] }]
@@ -902,8 +915,8 @@ export function validate(profile: Profile): Issue[] {
 
   const subnet = s.clientSubnet.trim();
   if (subnet && !parseCidr(subnet.toLowerCase())) err(SETTINGS, `ECS 网段格式不正确：${subnet}`);
-  const direct = parseDomainList(s.directDomains.join("\n"));
-  if (direct.invalid.length) err(ROUTING, `直连域名格式不正确：${describeInvalid(direct.invalid)}`);
+  const direct = directList(s);
+  if (direct.invalid.length) err(ROUTING, `直连域名或 IP 格式不正确：${describeInvalid(direct.invalid)}`);
   const proxy = parseRuleList(s.proxyRules.join("\n"));
   if (proxy.invalid.length) err(ROUTING, `代理域名或 IP 格式不正确：${describeInvalid(proxy.invalid)}`);
   if (s.clashController.trim() && !s.clashSecret) warn(SETTINGS, "Clash API 已开启但没有设置 secret");

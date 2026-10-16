@@ -44,7 +44,7 @@ function fullProfile(): Profile {
     blockIcloudQuic: true,
     clientSubnet: "203.0.113.0/24",
     clashSecret: "s",
-    directDomains: ["example.cn", "domain:www.example.org", "domain_keyword:intranet", ".example.org"],
+    directDomains: ["example.cn", "domain:www.example.org", "domain_keyword:intranet", ".example.org", "198.51.100.0/24", "2001:db8:1::/48"],
     proxyRules: ["intercom.io", "203.0.113.0/24", "2001:db8::/32", "domain_regex:^cdn\\d+\\.example\\.net$", "ip_cidr:198.51.100.0/24"],
     tailnets: [
       newTailnet({ tag: "home", endpoint: '{"state_directory":"ts-home","hostname":"a","accept_routes":true}' }),

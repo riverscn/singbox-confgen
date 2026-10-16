@@ -401,8 +401,42 @@ describe("custom direct domains", () => {
     const p = blueprintProfile();
     p.settings.directDomains = ["ok.example", "*.a.example"];
     expect(validate(p).find((i) => i.message.includes("直连域名"))?.message).toBe(
-      "直连域名格式不正确：*.a.example（不支持通配符：只匹配子域名写 .a.example，连同它本身写 a.example）",
+      "直连域名或 IP 格式不正确：*.a.example（不支持通配符：只匹配子域名写 .a.example，连同它本身写 a.example）",
     );
+  });
+
+  it("takes IP prefixes into their own set, and leaves the config as it was without them", () => {
+    const plain = withList(["example.com"]);
+    expect(plain.route.rule_set.some((r: any) => r.tag === "custom-direct-ips")).toBe(false);
+    expect(JSON.stringify(plain.route.rules)).toContain('{"rule_set":"custom-direct-domains"}');
+    const cfg = withList(["example.com", "198.51.100.0/24", "2001:db8::1"]);
+    expect(ruleSet(cfg).rules).toEqual([{ domain_suffix: ["example.com"] }]);
+    expect(cfg.route.rule_set.find((r: any) => r.tag === "custom-direct-ips").rules).toEqual([{ ip_cidr: ["198.51.100.0/24", "2001:db8::1/128"] }]);
+    expect(JSON.stringify(cfg.route.rules)).toContain('{"rule_set":["custom-direct-domains","custom-direct-ips"]}');
+    // DNS goes by domain only.
+    expect(JSON.stringify(cfg.dns.rules)).not.toContain("custom-direct-ips");
+  });
+
+  it("sends listed addresses direct in every mode but Global, ahead of the proxy list", () => {
+    const p = blueprintProfile();
+    p.settings.directDomains = ["203.0.113.0/24"];
+    p.settings.proxyRules = ["203.0.113.0/24"];
+    const at = (mode: Connection["mode"]) => routeWalk(gen(p), { mode, ip: "203.0.113.9" });
+    expect(at("Non-CN")).toBe("route:direct");
+    expect(at("GFWList")).toBe("route:direct");
+    expect(at("Global")).toBe("route:proxy");
+  });
+
+  it("still refuses CN IPv6 listed as direct when there is no local IPv6, even if the proxy list has it too", () => {
+    const p = blueprintProfile();
+    p.settings.directDomains = ["240e::/20"];
+    const at = (publicV6Iface: boolean) => routeWalk(gen(p), { mode: "Non-CN", ip: "240e:1::1", cn: true, publicV6Iface });
+    expect(at(false)).toBe("reject");
+    expect(at(true)).toBe("route:direct");
+    // Also in the proxy list: the direct list wins in routing, so the address is still refused.
+    p.settings.proxyRules = ["240e::/20", "2408::/16"];
+    expect(at(false)).toBe("reject");
+    expect(routeWalk(gen(p), { mode: "Non-CN", ip: "2408::1", cn: true, publicV6Iface: false })).toBe("route:proxy");
   });
 
   it("routes listed domains direct in every mode but Global", () => {
@@ -608,6 +642,12 @@ describe("rejecting direct CN IPv6 without local IPv6", () => {
       tag: "custom-rule-ips",
       rules: [{ ip_cidr: ["240e::/20"] }],
     });
+  });
+
+  it("matches a rule's prefixes by address even when the rule also lists domains", () => {
+    const p = profile({}, ["openai.com", "domain_keyword:claude", "2408::/16"]);
+    expect(where(p, "Non-CN", { ...cnV6, ip: "2408:8000::1" })).toBe("route:reality-1");
+    expect(where(p, "Global", { ip: "2408:8000::1" })).toBe("route:reality-1");
   });
 
   it("lets prefixes in the proxy list through to proxy, in Non-CN mode too", () => {

@@ -55,7 +55,7 @@ export interface Settings {
   /** Clash API listen address; empty disables the API. */
   clashController: string;
   clashSecret: string;
-  /** Lines as entered: domains (with subdomains) that always go direct except in Global mode. */
+  /** Lines as entered: domains or IP prefixes that always go direct except in Global mode. */
   directDomains: string[];
   /** Lines as entered: domains or IP prefixes that always go through the proxy. */
   proxyRules: string[];

@@ -863,13 +863,18 @@ function Intro(props: { children: ReactNode }) {
   return <p className="max-w-prose text-xs/relaxed text-muted-foreground">{props.children}</p>;
 }
 
+/** How many there are, beside a tab or list title: the same pill in both places. */
+function Count(props: { n: number; className?: string }) {
+  return <span className={cn("rounded-full bg-muted px-1.5 text-[11px] leading-4 font-normal text-muted-foreground tabular-nums", props.className)}>{props.n}</span>;
+}
+
 /** Title and count of a list, with its actions on the right. */
 function ListHead(props: { title: ReactNode; count: number; children: ReactNode }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-      <h2 className="text-xs font-medium">
+      <h2 className="inline-flex items-center gap-1.5 text-xs font-medium">
         {props.title}
-        <span className="ml-1.5 text-muted-foreground tabular-nums">{props.count}</span>
+        <Count n={props.count} />
       </h2>
       <div className="flex flex-wrap items-center gap-1.5">{props.children}</div>
     </div>
@@ -895,11 +900,15 @@ function Panel(props: { title?: ReactNode; description?: ReactNode; children: Re
   );
 }
 
-/** Position in the matching order, before the title of each part of the routing tab. */
-function OrderBadge(props: { n: number }) {
+/** A routing-tab title with its position in the matching order, centered on the text. */
+function OrderedTitle(props: { n: number; children: ReactNode }) {
   return (
-    <span className="mr-1.5 inline-flex size-4 items-center justify-center rounded-full bg-muted align-[-2px] text-[10px] font-medium text-muted-foreground tabular-nums">
-      {props.n}
+    <span className="inline-flex items-center gap-1.5">
+      {/* Outlined, unlike the plain count after a list title and the filled steps on the Start tab. */}
+      <span className="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[10px] leading-none font-semibold text-foreground tabular-nums ring-1 ring-foreground/40">
+        {props.n}
+      </span>
+      {props.children}
     </span>
   );
 }
@@ -978,29 +987,20 @@ function RoutingCard(props: { settings: Settings; onChange: (patch: Partial<Sett
       </Panel>
       <Intro>下面三部分按顺序匹配，先匹配到的生效；都没有匹配上的流量按模式处理。</Intro>
       <Panel
-        title={
-          <>
-            <OrderBadge n={1} />
-            直连域名
-          </>
-        }
-        description="除 Global 外始终直连，用本地 DNS 解析"
+        title={<OrderedTitle n={1}>直连域名和 IP</OrderedTitle>}
+        description="除 Global 外始终直连，域名用本地 DNS 解析；IP 适合只按地址连接的应用和自己的服务器"
       >
         <ListEditor
-          ariaLabel="直连域名"
+          ariaLabel="直连域名和 IP"
           lines={s.directDomains}
           onChange={(directDomains) => props.onChange({ directDomains })}
-          placeholder={"example.cn\nintranet.example.com  # 公司内网"}
+          placeholder={"example.cn\nintranet.example.com  # 公司内网\n198.51.100.0/24  # 自己的服务器"}
+          allowIp
         />
       </Panel>
       {props.rules}
       <Panel
-        title={
-          <>
-            <OrderBadge n={3} />
-            代理域名和 IP
-          </>
-        }
+        title={<OrderedTitle n={3}>代理域名和 IP</OrderedTitle>}
         description={
           <>
             除 Direct 外始终经 <ProxyTerm /> 走代理，用远程 DNS 解析；适合被墙但不在 gfwlist 里的网站
@@ -2082,7 +2082,7 @@ export default function App() {
                   <TabsTrigger key={t.id} value={t.id} className="px-2 text-[13px] sm:px-2.5">
                     {t.label}
                     {counts[t.id] !== undefined && (
-                      <span className="hidden rounded-full bg-muted px-1.5 text-[11px] leading-4 text-muted-foreground tabular-nums min-[420px]:inline">{counts[t.id]}</span>
+                      <Count n={counts[t.id]!} className="hidden min-[420px]:inline" />
                     )}
                     {state && <span className={`dot ${state}`} aria-label={state === "error" ? "有错误" : "有提醒"} />}
                   </TabsTrigger>
@@ -2203,12 +2203,7 @@ export default function App() {
                   rules={
                     <>
                       <ListHead
-                        title={
-                          <>
-                            <OrderBadge n={2} />
-                            规则
-                          </>
-                        }
+                        title={<OrderedTitle n={2}>规则</OrderedTitle>}
                         count={profile.settings.rules.length}
                       >
                         <Button onClick={addRule}>

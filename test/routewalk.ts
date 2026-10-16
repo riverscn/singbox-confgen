@@ -35,41 +35,44 @@ function inRuleSet(tag: string, config: Json, c: Connection): boolean {
   return set.rules.some((r: Json) => r.ip_cidr && inPrefixes(c.ip, r.ip_cidr));
 }
 
+/** sing-box ORs a rule's destination fields together; with no sniffed domain only addresses can match. */
+const DESTINATION = ["domain", "domain_suffix", "domain_keyword", "domain_regex", "ip_cidr", "ip_is_private"];
+
 function matches(rule: Json, config: Json, c: Connection): boolean {
   let ok: boolean;
   if (rule.type === "logical") {
     const results = rule.rules.map((r: Json) => matches(r, config, c));
     ok = rule.mode === "and" ? results.every(Boolean) : results.some(Boolean);
   } else {
-    ok = Object.entries(rule).every(([k, v]) => {
-      switch (k) {
-        case "action":
-        case "outbound":
-        case "method":
-        case "no_drop":
-        case "invert":
-          return true;
-        case "clash_mode":
-          return c.mode === v;
-        case "network":
-          return list(v).includes("tcp");
-        case "ip_version":
-          return v === (isIPv6(c.ip) ? 6 : 4);
-        case "ip_cidr":
-          return inPrefixes(c.ip, list(v));
-        case "rule_set":
-          return list(v).some((tag) => inRuleSet(tag, config, c));
-        case "default_interface_address":
-          return !!c.publicV6Iface;
-        case "port":
-          return list(v).includes(c.port ?? 443);
-        case "ip_is_private":
-          return false;
-        // Needs a sniffed domain or protocol, or a tailnet peer: none here.
-        default:
-          return false;
-      }
-    });
+    const destination = DESTINATION.filter((k) => k in rule);
+    ok =
+      (!destination.length || (!!rule.ip_cidr && inPrefixes(c.ip, list(rule.ip_cidr)))) &&
+      Object.entries(rule).every(([k, v]) => {
+        if (DESTINATION.includes(k)) return true;
+        switch (k) {
+          case "action":
+          case "outbound":
+          case "method":
+          case "no_drop":
+          case "invert":
+            return true;
+          case "clash_mode":
+            return c.mode === v;
+          case "network":
+            return list(v).includes("tcp");
+          case "ip_version":
+            return v === (isIPv6(c.ip) ? 6 : 4);
+          case "rule_set":
+            return list(v).some((tag) => inRuleSet(tag, config, c));
+          case "default_interface_address":
+            return !!c.publicV6Iface;
+          case "port":
+            return list(v).includes(c.port ?? 443);
+          // Needs a sniffed domain or protocol, or a tailnet peer: none here.
+          default:
+            return false;
+        }
+      });
   }
   return rule.invert ? !ok : ok;
 }

@@ -23,6 +23,14 @@ const list = (v: unknown): any[] => (v === undefined || v === null ? [] : Array.
 
 const pretty = (o: Json) => JSON.stringify(o, null, 2);
 
+/** A rule's domain matchers as list lines, with the prefixes the list editors take. */
+const domainLines = (r: Json): string[] => [
+  ...list(r.domain).map((d) => `domain:${d}`),
+  ...list(r.domain_suffix),
+  ...list(r.domain_keyword).map((d) => `domain_keyword:${d}`),
+  ...list(r.domain_regex).map((d) => `domain_regex:${d}`),
+];
+
 const GROUP_TYPES = ["selector", "urltest"];
 /** Group tags the generator creates itself; not imported as user groups. */
 const RESERVED_GROUPS = ["proxy", "auto"];
@@ -141,11 +149,11 @@ export function importSingBoxConfig(text: string): ImportResult {
       const dnsTag = server?.tag;
       const magicDns = !!dnsTag && dnsRules.some((r) => list(r.preferred_by).includes(dnsTag));
       const dnsDomains = dnsTag
-        ? dnsRules.filter((r) => r.server === dnsTag && r.domain_suffix && !r.preferred_by).flatMap((r) => list(r.domain_suffix))
+        ? dnsRules.filter((r) => r.server === dnsTag && !r.preferred_by).flatMap(domainLines)
         : [];
       const routes = routeRules
-        .filter((r) => r.outbound === tag && !r.preferred_by && (r.domain_suffix || r.ip_cidr))
-        .flatMap((r) => [...list(r.domain_suffix), ...list(r.ip_cidr)]);
+        .filter((r) => r.outbound === tag && !r.preferred_by && (domainLines(r).length || r.ip_cidr))
+        .flatMap((r) => [...domainLines(r), ...list(r.ip_cidr)]);
       return newTailnet({
         tag,
         endpoint: pretty(body),
@@ -153,7 +161,9 @@ export function importSingBoxConfig(text: string): ImportResult {
         acceptDefaultResolvers: !!server?.accept_default_resolvers,
         dnsDomains,
         routes,
-        asProxy: grouped.has(tag) || typeof exit_node === "string",
+        // Only a selector offering the endpoint makes it a proxy choice; an exit node alone
+        // doesn't, since the source may reach the endpoint only through its own routes.
+        asProxy: grouped.has(tag),
         exitNode: typeof exit_node === "string" ? exit_node : "",
       });
     });

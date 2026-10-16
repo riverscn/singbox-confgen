@@ -36,24 +36,36 @@ describe("importing an existing sing-box config", () => {
     expect(work.dnsDomains).toEqual(["corp.example.com"]);
     expect(JSON.parse(work.endpoint)).toMatchObject({ hostname: "my-mac-2", accept_routes: true });
     expect(JSON.parse(work.endpoint).type).toBeUndefined();
-    // The exit node moves into its own field and makes the tailnet a proxy choice.
+    // The exit node moves into its own field; no group offers the endpoint, so it stays out of proxy.
     expect(JSON.parse(work.endpoint).exit_node).toBeUndefined();
     expect(work.exitNode).toBe("office-gw");
+    expect(work.asProxy).toBe(false);
+    expect(home.asProxy).toBe(false);
+  });
+
+  it("makes a tailnet a proxy choice only when a selector offers it", () => {
+    const config = JSON.parse(baselineText);
+    config.outbounds.find((o: any) => o.tag === "proxy").outbounds.push("work");
+    const [home, work] = importSingBoxConfig(JSON.stringify(config)).tailnets;
     expect(work.asProxy).toBe(true);
+    expect(work.exitNode).toBe("office-gw");
+    expect(home.asProxy).toBe(false);
   });
 
   it.each(["full-apple", "combo-ss-shadowtls"])("round-trips nodes, groups and Tailscale through a generated config (%s)", (name) => {
     const profile = sample(name);
     const config = generateConfig(profile) as any;
     const imported = importSingBoxConfig(JSON.stringify(config));
-    // proxy's default and node listing are settings of ours, not imported: map them across by tag.
-    const defaultTag = profile.groups.find((g) => g.id === profile.settings.proxyDefault)?.tag;
-    const proxyDefault = imported.groups.find((g) => g.tag === defaultTag)?.id ?? "auto";
+    // proxy's default, node listing and rules are settings of ours, not imported: map them across by tag.
+    const tagOf = (id: string) => [...profile.groups, ...profile.nodes].find((x) => x.id === id)?.tag;
+    const idOf = (tag: string | undefined) => [...imported.groups, ...imported.nodes].find((x) => x.tag === tag)?.id;
+    const proxyDefault = idOf(tagOf(profile.settings.proxyDefault)) ?? "auto";
+    const rules = profile.settings.rules.map((r) => ({ ...r, outbound: idOf(tagOf(r.outbound)) ?? "" }));
     const rebuilt = generateConfig({
       ...profile,
       nodes: imported.nodes,
       groups: imported.groups,
-      settings: { ...profile.settings, tailnets: imported.tailnets, proxyDefault },
+      settings: { ...profile.settings, tailnets: imported.tailnets, proxyDefault, rules },
     }) as any;
     expect(normalize(rebuilt.outbounds)).toEqual(normalize(config.outbounds));
     expect(normalize(rebuilt.endpoints)).toEqual(normalize(config.endpoints));

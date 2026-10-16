@@ -33,6 +33,14 @@ export interface Tailnet {
   exitNode: string;
 }
 
+export interface RouteRule {
+  id: string;
+  /** Id of the node or group that matching traffic goes through. */
+  outbound: string;
+  /** Lines as entered: domains or IP prefixes, in the same syntax as the other lists. */
+  lines: string[];
+}
+
 export interface Settings {
   platform: Platform;
   defaultMode: "GFWList" | "Non-CN" | "Global" | "Direct";
@@ -47,10 +55,12 @@ export interface Settings {
   /** Clash API listen address; empty disables the API. */
   clashController: string;
   clashSecret: string;
-  /** Lines as entered: domains (with subdomains) that always go direct except in Global mode. */
+  /** Lines as entered: domains or IP prefixes that always go direct except in Global mode. */
   directDomains: string[];
   /** Lines as entered: domains or IP prefixes that always go through the proxy. */
   proxyRules: string[];
+  /** Traffic sent to a chosen node or group, checked in order after the direct list. */
+  rules: RouteRule[];
   tailnets: Tailnet[];
   /** What `proxy` picks by default: "auto" or a group id. */
   proxyDefault: string;

@@ -14,6 +14,8 @@ export interface Query {
   customDirect?: boolean;
   /** Listed in the custom proxy domains. */
   customProxy?: boolean;
+  /** Listed in a rule that sends it to a node or group. */
+  ruleDomain?: boolean;
   publicV6Iface?: boolean;
 }
 
@@ -49,7 +51,9 @@ function leaf(rule: Json, q: Query): Tri {
                 ? !!q.cnSite
                 : s === "custom-direct-domains"
                   ? !!q.customDirect
-                  : false,
+                  : s === "custom-rule-domains"
+                    ? !!q.ruleDomain
+                    : false,
           ),
         );
         break;

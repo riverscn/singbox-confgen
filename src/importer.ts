@@ -26,6 +26,47 @@ const GROUP_TYPES = ["selector", "urltest"];
 /** Group tags the generator creates itself; not imported as user groups. */
 const RESERVED_GROUPS = ["proxy", "auto"];
 
+/** Every peer is routed everything, as the legacy outbound did with its single peer. */
+const ALL_IPS = ["0.0.0.0/0", "::/0"];
+
+/** A WireGuard outbound from before sing-box 1.11 rewritten as the endpoint that replaced it. */
+function wireguardEndpoint(o: Json): Json {
+  const {
+    server,
+    server_port,
+    local_address,
+    peer_public_key,
+    pre_shared_key,
+    reserved,
+    peers,
+    system_interface,
+    interface_name,
+    gso: _gso,
+    network: _network,
+    ...rest
+  } = o;
+  const peer = (p: Json): Json =>
+    Object.fromEntries(
+      Object.entries({
+        address: p.server,
+        port: p.server_port,
+        public_key: p.public_key,
+        pre_shared_key: p.pre_shared_key,
+        allowed_ips: p.allowed_ips ?? ALL_IPS,
+        reserved: p.reserved,
+      }).filter(([, v]) => v !== undefined),
+    );
+  return {
+    ...rest,
+    ...(system_interface ? { system: true } : {}),
+    ...(interface_name ? { name: interface_name } : {}),
+    ...(local_address !== undefined ? { address: local_address } : {}),
+    peers: list(peers).length
+      ? list(peers).map(peer)
+      : [peer({ server, server_port, public_key: peer_public_key, pre_shared_key, reserved })],
+  };
+}
+
 /** Fields the generator fills in or that only make sense in the source config. */
 function nodeBody(o: Json, keptResolvers: Set<string>): Json {
   const { tag: _tag, ...body } = o;
@@ -90,10 +131,17 @@ export function importSingBoxConfig(text: string): ImportResult {
   // ---- nodes ----
   // Resolvers that still exist after import: the generator's own servers.
   const keptResolvers = new Set(["local", "remote", ...tailnets.map((t) => `${t.tag}-dns`)]);
+  // WireGuard was an outbound before 1.11; the other endpoint types never were.
+  const legacyWireguard = outbounds.filter((o) => o.type === "wireguard").map((o) => o.tag);
   const candidates = [
-    ...outbounds.filter((o) => NODE_TYPES.includes(o.type) && !ENDPOINT_TYPES.includes(o.type)),
+    ...outbounds
+      .filter((o) => NODE_TYPES.includes(o.type) && (!ENDPOINT_TYPES.includes(o.type) || o.type === "wireguard"))
+      .map((o) => (o.type === "wireguard" ? wireguardEndpoint(o) : o)),
     ...endpoints.filter((e) => ENDPOINT_TYPES.includes(e.type)),
   ];
+  if (legacyWireguard.length) {
+    notes.push(`旧版 WireGuard outbound（${legacyWireguard.join("、")}）已转换为 endpoint 写法，请核对 peers`);
+  }
   const dropped = new Set<string>();
   const nodes = candidates.map((o) => {
     const resolver = typeof o.domain_resolver === "string" ? o.domain_resolver : o.domain_resolver?.server;
@@ -143,13 +191,46 @@ export function importSingBoxConfig(text: string): ImportResult {
   return { nodes, tailnets, groups: kept, notes };
 }
 
-/** Rename imported tags that collide with existing ones (`a` → `a-2`). */
-export function dedupeTags<T extends { tag: string }>(incoming: T[], existing: string[]): T[] {
-  const used = new Set(existing);
-  return incoming.map((x) => {
-    let tag = x.tag;
-    for (let i = 2; used.has(tag); i++) tag = `${x.tag}-${i}`;
-    used.add(tag);
-    return tag === x.tag ? x : { ...x, tag };
-  });
+/** Outbound tags the generator always emits. */
+const RESERVED_TAGS = [...RESERVED_GROUPS, "direct"];
+
+export interface FittedImport {
+  nodes: ProxyNode[];
+  tailnets: Tailnet[];
+  groups: ProxyGroup[];
+  /** `old → new` for each renamed tag. */
+  renamed: string[];
+}
+
+/**
+ * Fit an import next to the tags a profile already has. Nodes, tailnets and groups share one
+ * namespace, so a tag clashing with any existing, reserved or earlier incoming tag is renamed
+ * (`a` → `a-2`), and detours to a renamed node follow it.
+ */
+export function fitImport(result: ImportResult, existing: string[]): FittedImport {
+  const used = new Set([...RESERVED_TAGS, ...existing]);
+  const renames = new Map<string, string>();
+  const fit = <T extends { tag: string }>(items: T[]): T[] =>
+    items.map((x) => {
+      let tag = x.tag;
+      for (let i = 2; used.has(tag); i++) tag = `${x.tag}-${i}`;
+      used.add(tag);
+      if (tag === x.tag) return x;
+      if (!renames.has(x.tag)) renames.set(x.tag, tag);
+      return { ...x, tag };
+    });
+  const nodes = fit(result.nodes);
+  const tailnets = fit(result.tailnets);
+  const groups = fit(result.groups);
+  // Bodies come from the importer as plain JSON, so they can be parsed and rewritten as is.
+  const follow = (json: string) => {
+    const o = JSON.parse(json);
+    return typeof o.detour === "string" && renames.has(o.detour) ? pretty({ ...o, detour: renames.get(o.detour) }) : json;
+  };
+  return {
+    nodes: nodes.map((n) => ({ ...n, body: follow(n.body) })),
+    tailnets: tailnets.map((t) => ({ ...t, endpoint: follow(t.endpoint) })),
+    groups,
+    renamed: [...renames].map(([from, to]) => `${from} → ${to}`),
+  };
 }

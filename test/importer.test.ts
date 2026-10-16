@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { generateConfig } from "../src/generate";
-import { dedupeTags, importSingBoxConfig } from "../src/importer";
+import Ajv2020 from "ajv/dist/2020";
+import { fitImport, importSingBoxConfig } from "../src/importer";
 import { normalize } from "./normalize";
 import { sampleProfiles } from "./samples";
 
 const baselineText = readFileSync(new URL("./fixtures/tiger-baseline.json", import.meta.url), "utf8");
 const sample = (name: string) => sampleProfiles().find((s) => s.name === name)!.profile;
+const schema = JSON.parse(readFileSync(new URL("./fixtures/sing-box-1.14.3.schema.json", import.meta.url), "utf8"));
+const validate = new Ajv2020({ strict: false, allErrors: true }).compile(schema);
 
 describe("importing an existing sing-box config", () => {
   const { nodes, tailnets, notes } = importSingBoxConfig(baselineText);
@@ -109,9 +112,96 @@ describe("importing proxy groups", () => {
   });
 });
 
-describe("dedupeTags", () => {
-  it("renames clashes with existing and earlier incoming tags", () => {
-    const out = dedupeTags([{ tag: "a" }, { tag: "a" }, { tag: "b" }], ["a", "a-2"]);
-    expect(out.map((x) => x.tag)).toEqual(["a-3", "a-4", "b"]);
+describe("legacy WireGuard outbounds", () => {
+  const r = importSingBoxConfig(
+    JSON.stringify({
+      outbounds: [
+        { type: "trojan", tag: "t", server: "t.example.org", server_port: 443, password: "p" },
+        {
+          type: "wireguard",
+          tag: "wg",
+          server: "203.0.113.1",
+          server_port: 51820,
+          local_address: ["10.0.0.2/32"],
+          private_key: "cHJpdmF0ZQ==",
+          peer_public_key: "cHVibGlj",
+          reserved: [1, 2, 3],
+          mtu: 1408,
+          gso: true,
+        },
+        {
+          type: "wireguard",
+          tag: "wg-multi",
+          system_interface: true,
+          interface_name: "wg0",
+          local_address: "10.1.0.2/32",
+          private_key: "cHJpdmF0ZQ==",
+          peers: [{ server: "198.51.100.1", server_port: 51820, public_key: "cGVlcg==", allowed_ips: ["10.1.0.0/24"] }],
+        },
+      ],
+    }),
+  );
+
+  it("are rewritten as endpoints, in place, with a note", () => {
+    expect(r.nodes.map((n) => n.tag)).toEqual(["t", "wg", "wg-multi"]);
+    expect(JSON.parse(r.nodes[1].body)).toEqual({
+      type: "wireguard",
+      address: ["10.0.0.2/32"],
+      private_key: "cHJpdmF0ZQ==",
+      mtu: 1408,
+      peers: [{ address: "203.0.113.1", port: 51820, public_key: "cHVibGlj", allowed_ips: ["0.0.0.0/0", "::/0"], reserved: [1, 2, 3] }],
+    });
+    expect(JSON.parse(r.nodes[2].body)).toMatchObject({
+      system: true,
+      name: "wg0",
+      address: "10.1.0.2/32",
+      peers: [{ address: "198.51.100.1", port: 51820, public_key: "cGVlcg==", allowed_ips: ["10.1.0.0/24"] }],
+    });
+    expect(r.notes.join()).toContain("旧版 WireGuard outbound（wg、wg-multi）");
+  });
+
+  it("generate a config that matches the 1.14 schema", () => {
+    const profile = sample("full-apple");
+    const config = generateConfig({ ...profile, nodes: r.nodes, groups: [] }) as any;
+    expect(config.endpoints.filter((e: any) => e.type === "wireguard").map((e: any) => e.tag)).toEqual(["wg", "wg-multi"]);
+    validate(config);
+    expect(validate.errors ?? []).toEqual([]);
+  });
+});
+
+describe("fitting an import into a profile", () => {
+  const r = importSingBoxConfig(
+    JSON.stringify({
+      outbounds: [
+        { type: "selector", tag: "hk", outbounds: ["a", "b"] },
+        { type: "shadowsocks", tag: "a", server: "a.example.org", server_port: 443, method: "2022-blake3-aes-128-gcm", password: "p", detour: "b" },
+        { type: "shadowtls", tag: "b", server: "b.example.org", server_port: 443, version: 3, password: "p" },
+        { type: "trojan", tag: "auto", server: "c.example.org", server_port: 443, password: "p" },
+      ],
+      endpoints: [{ type: "tailscale", tag: "ts", detour: "b" }],
+    }),
+  );
+
+  it("renames clashes across nodes, tailnets, groups and reserved tags", () => {
+    const fitted = fitImport(r, ["b", "hk", "ts"]);
+    expect(fitted.nodes.map((n) => n.tag)).toEqual(["a", "b-2", "auto-2"]);
+    expect(fitted.tailnets.map((t) => t.tag)).toEqual(["ts-2"]);
+    expect(fitted.groups.map((g) => g.tag)).toEqual(["hk-2"]);
+    expect(fitted.renamed).toEqual(["b → b-2", "auto → auto-2", "ts → ts-2", "hk → hk-2"]);
+    // Members are by id, so the group keeps its nodes through the renames.
+    expect(fitted.groups[0].members).toEqual(r.nodes.slice(0, 2).map((n) => n.id));
+  });
+
+  it("points detours at the renamed nodes", () => {
+    const fitted = fitImport(r, ["b"]);
+    expect(JSON.parse(fitted.nodes[0].body).detour).toBe("b-2");
+    expect(JSON.parse(fitted.tailnets[0].endpoint).detour).toBe("b-2");
+  });
+
+  it("leaves everything as it was without clashes", () => {
+    const clean = importSingBoxConfig(JSON.stringify({ outbounds: [{ type: "socks", tag: "s", server: "127.0.0.1", server_port: 1080 }] }));
+    const fitted = fitImport(clean, ["x"]);
+    expect(fitted.nodes).toEqual(clean.nodes);
+    expect(fitted.renamed).toEqual([]);
   });
 });

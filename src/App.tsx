@@ -4,7 +4,7 @@ import { TEMPLATES } from "./templates";
 import { REMOTE_DNS, generateConfig, nodeObject, parseDomainList, parseRuleList, tailnetEndpoint, validate, type Issue } from "./generate";
 import { freshTag, newGroup, newNode, newTailnet, randomSecret } from "./defaults";
 import { clearStore, defaultStore, loadStore, newSavedProfile, saveStore, type Store } from "./storage";
-import { dedupeTags, importSingBoxConfig, type ImportResult } from "./importer";
+import { fitImport, importSingBoxConfig, type ImportResult } from "./importer";
 import { useDialogs } from "./dialog";
 import { CodeEditor } from "./code-editor";
 import { useDragSort } from "./drag-sort";
@@ -1384,18 +1384,11 @@ export default function App() {
     }
     // Untouched template examples (still pointing at example.com) are replaced rather than kept.
     const keep = profile.nodes.every(isExampleNode) ? [] : profile.nodes;
-    const nodes = dedupeTags(result.nodes, [...keep.map((n) => n.tag), ...profile.settings.tailnets.map((t) => t.tag)]);
-    const tailnets = dedupeTags(result.tailnets, [...profile.settings.tailnets.map((t) => t.tag), ...nodes.map((n) => n.tag)]);
-    const groups = dedupeTags(result.groups, [
-      ...profile.groups.map((g) => g.tag),
-      ...nodes.map((n) => n.tag),
-      ...tailnets.map((t) => t.tag),
+    const { nodes, tailnets, groups, renamed } = fitImport(result, [
       ...keep.map((n) => n.tag),
+      ...profile.settings.tailnets.map((t) => t.tag),
+      ...profile.groups.map((g) => g.tag),
     ]);
-    const renamed = [...result.nodes, ...result.tailnets, ...result.groups]
-      .map((x, i) => [x.tag, [...nodes, ...tailnets, ...groups][i].tag])
-      .filter(([from, to]) => from !== to)
-      .map(([from, to]) => `${from} → ${to}`);
     const content = (
       <ImportSummary
         rows={[

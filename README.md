@@ -1,11 +1,70 @@
 # sing-box 配置生成器
 
-纯前端的 sing-box 配置生成器：在网页里填写代理服务器和少量偏好，实时生成完整的 `config.json`，可以复制或下载。
+**填入节点，DNS、IPv6 与分流按最佳实践配好。**
 
-- 需要 sing-box **1.14** 及以上（Apple 平台的 SFM/SFI、Android 的 SFA，或 Linux/Windows 命令行版）。
-- 没有后端，运行时不发出任何网络请求；设置只保存在当前浏览器的 localStorage 里，可以保存多套配置。
-- 可以从现有的 sing-box 配置（例如客户端里正在用的 `config.json`）导入节点和 Tailscale 设置；DNS 和分流规则由本工具生成。下载的 `config.json` 本身也能再导入回来。
-- 分流策略是一套固定、经过实测的规则（四种模式：GFWList、Non-CN、Global、Direct），设计理由见 [DESIGN.md](DESIGN.md)。需要深度定制时，直接修改生成的 JSON。
+[![CI](https://github.com/riverscn/singbox-confgen/actions/workflows/ci.yml/badge.svg)](https://github.com/riverscn/singbox-confgen/actions/workflows/ci.yml)
+![sing-box 1.14+](https://img.shields.io/badge/sing--box-1.14%2B-blue)
+![纯前端](https://img.shields.io/badge/运行-纯浏览器-green)
+
+一份 sing-box 配置用着别扭，问题多半不在节点，而在看不见的地方。这个生成器把这些坑逐一实测、给出对策，你只需要填节点，就能得到一份完整的 `config.json`，导入 SFM、SFI、SFA 或命令行版即可使用。
+
+## 它解决了什么
+
+| 症状 | 原因 | 这里的做法 |
+|---|---|---|
+| 国内网站被解析到海外，或者被墙的域名打不开 | DNS 没有跟着分流走：国内域名问了海外 DNS，被墙域名拿到污染的地址 | 直连的用本地 DNS，走代理的经代理问远程 DNS；拿不准的域名两边一起问，答出国内 IP 才直连（[DNS 策略](DESIGN.md#2-dns-策略)） |
+| 开了代理，部分连接却绕过去或连不上 | 应用优先用 IPv6，而代理服务器没有 IPv6，或者 IPv6 根本不经过 sing-box | 走代理只给 A 记录，连 HTTPS/SVCB 里的 IPv6 提示一起清掉；本机没有 IPv6 时直连也干净地回退到 IPv4（[IPv6 策略](DESIGN.md#3-ipv6-策略)） |
+| 网站频繁要求验证、风控 | 出口 IP 在 IPv4 和 IPv6、不同服务器之间漂移 | 走代理的流量始终从同一台服务器、同一个 IPv4 出去 |
+| 换了节点，有些东西还走旧线路 | DNS、规则集下载各有各的出口 | 代理流量、远程 DNS、规则集下载共用一个 `proxy` 出口，换节点时一起换（[代理组](DESIGN.md#6-代理组)） |
+| 一开全局，家里的 NAS、公司内网就连不上 | 局域网和内网流量也被送进了代理 | 局域网在任何模式下直连；在外面用内置的 Tailscale 连回 tailnet，分域 DNS 拿到内网地址（[Tailscale](DESIGN.md#4-tailscale)） |
+
+每条策略都在日常使用中实测过，生成的配置在 Linux、macOS、Windows 上用官方 `sing-box check` 检查过。完整的设计理由见 [DESIGN.md](DESIGN.md)。
+
+## 三步上手
+
+1. **填节点**：从协议模板添加，或者导入客户端里正在用的 `config.json`（节点和 Tailscale 原样带过来，DNS 和分流按这里的策略重写）。
+2. **选默认模式**：GFWList、Non-CN、Global、Direct 四种都会写进配置，在客户端里随时切换。被墙但不在 gfwlist 里的网站，加进自定义代理域名。
+3. **下载 `config.json`**：导入 SFM、SFI、SFA，或运行 `sing-box run -c config.json`。需要 sing-box **1.14** 及以上。
+
+最后一件事：浏览器的“安全 DNS”（DoH）请保持“自动”或关闭。手动指定 DoH 服务商会绕过 sing-box 的 DNS 分流。
+
+## 隐私
+
+- 没有后端。页面的 CSP 禁止发出任何网络请求，设置只保存在当前浏览器的 localStorage 里，可以保存多套配置。
+- 下载的 `config.json` 本身也能再导入回来。
+- 分流策略是固定的一套；需要深度定制时，直接修改生成的 JSON，或者交给 AI 助手（见下一节）。
+
+## 用 AI 助手修改配置
+
+网页只提供一套策略和少量开关。网页里没有的改动（例如加一个 SOCKS 入站、让某个 App 不经过 sing-box），可以交给 Claude Code、Codex、Cursor 等 AI 编程助手。本仓库附带一个 skill：[`sing-box-best-practice`](skills/sing-box-best-practice/SKILL.md)，它告诉助手：
+
+- 这份配置的 DNS 规则、路由规则和规则集分别是什么结构、为什么这样排；
+- 哪些约束不能破坏（单一 `proxy` 出口、走代理只给 IPv4、直连优先等），常见修改要同时改哪几处；
+- 每个字段都要对照 [sing-box 官方文档](https://sing-box.sagernet.org/configuration/) 查证，先确认你的 sing-box 版本，版本过旧或功能需要新版本时提醒你更新；
+- 需要细节时去读本项目的 [DESIGN.md](DESIGN.md) 和 [`src/generate.ts`](src/generate.ts)。
+
+用 [skills CLI](https://www.skills.sh/docs/cli) 安装（需要 Node.js）：
+
+```bash
+npx skills add riverscn/singbox-confgen
+```
+
+按提示选择你用的助手。常用选项：
+
+| 选项 | 作用 |
+|---|---|
+| `-g` | 装到用户目录，所有项目都能用（默认只装到当前项目） |
+| `-a claude-code` | 只装给指定的助手，例如 `claude-code`、`codex`、`cursor` |
+| `--skill sing-box-best-practice` | 只装这一个 skill |
+| `-y` | 跳过确认 |
+
+例如不经询问、全局装给 Claude Code：
+
+```bash
+npx skills add riverscn/singbox-confgen --skill sing-box-best-practice -g -a claude-code -y
+```
+
+之后用 `npx skills update` 更新。装好后，把下载的 `config.json` 交给助手，直接说要什么，例如“加一个 SOCKS 入站，让局域网里的其他设备也能用”，或者“这个网站在 Non-CN 模式下为什么走了代理？”。能在网页里做的改动，助手会建议你回网页改，因为下次从网页下载会覆盖手改的内容。
 
 ## 可以设置什么
 
@@ -16,10 +75,6 @@
 | 分流 | 默认模式；直连域名；代理域名和 IP（适合被墙但不在 gfwlist 里的网站） |
 | Tailscale | 任意多个 tailnet：端点用 JSON 编写（可写注释）；MagicDNS、tailnet 默认 DNS、分域 DNS、额外路由、作为代理出口 |
 | 高级 | 目标平台；代理 DNS 服务器（Google / Cloudflare / Quad9，DoT 或 DoH，或用 JSON 自定义任意 DNS 服务器）；ECS；Clash API；Steam、禁止 iCloud 使用 QUIC |
-
-## 浏览器设置建议
-
-浏览器的“安全 DNS”（DoH）请保持“自动”或关闭。手动指定 DoH 服务商会绕过 sing-box 的 DNS 分流。
 
 ## 开发
 
@@ -90,4 +145,5 @@ git push --follow-tags
 - `test/samples.ts`：覆盖全部节点模板和功能、平台组合的示例配置，供 schema 测试和 `sing-box check` 共用。
 - `test/schema.test.ts`：用 sing-box 1.14.3 官方 JSON schema（`test/fixtures/sing-box-1.14.3.schema.json`）校验所有示例配置。
 - `test/storage.test.ts`：多套配置的存储和旧数据迁移。
+- `skills/sing-box-best-practice/`：给 AI 编程助手用的 skill，说明如何修改生成的配置。
 - `scripts/`：下载并校验官方 sing-box（`fetch-sing-box.py`），对示例配置跑 `sing-box check`（`singbox-check.ts`）。

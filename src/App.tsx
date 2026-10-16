@@ -1379,7 +1379,7 @@ function StartPage(props: {
   return (
     <>
       <section className="flex flex-col gap-2 pt-1">
-        <h2 className="text-base font-semibold">你只管填节点，DNS 和分流已经想好了</h2>
+        <h2 className="text-base font-semibold">填入节点，DNS、IPv6 与分流按最佳实践配好</h2>
         <p className="max-w-prose text-xs/relaxed text-muted-foreground">
           一份 sing-box 配置用着别扭，问题多半不在节点，而在看不见的地方：国内网站被解析到海外、被墙的域名拿到污染的地址、一开全局就连不上家里的
           NAS、IPv6 悄悄绕开了代理。这些坑都在日常使用中实测过，并给出了对策，最后做成了这张表单。
@@ -1469,9 +1469,57 @@ function StartPage(props: {
       </Panel>
 
       <p className="max-w-prose text-xs/relaxed text-muted-foreground">
-        为什么不能逐条改规则？因为它们环环相扣：查询的先后、并行的时机、IPv6 的处理，动一条就可能悄悄出错。所以这里只给一套策略和四种模式；真要深度定制，直接改生成的 JSON。
+        为什么不能逐条改规则？因为它们环环相扣：查询的先后、并行的时机、IPv6 的处理，动一条就可能悄悄出错。所以这里只给一套策略和四种模式；真要深度定制，直接改生成的
+        JSON，或者交给下面的 AI 助手。
       </p>
+
+      <SkillPanel />
     </>
+  );
+}
+
+const SKILL_INSTALL = "npx skills add riverscn/singbox-confgen";
+
+/** How to install the project's agent skill, for editing the downloaded config with an AI coding agent. */
+function SkillPanel() {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    if (await copyText(SKILL_INSTALL)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+  return (
+    <Panel
+      title="让 AI 助手接着改"
+      description="网页里没有的改动，可以交给 Claude Code、Codex、Cursor 等 AI 编程助手。装上本项目的 skill，它就知道这份配置的结构和不能破坏的约束，会对照官方文档和你的 sing-box 版本来改。"
+    >
+      <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted py-1 pr-1 pl-3">
+        <code className="min-w-0 flex-1 truncate font-mono text-xs">{SKILL_INSTALL}</code>
+        <Button variant="ghost" size="sm" onClick={copy} aria-label="复制安装命令">
+          {copied ? <Check /> : <Copy />}
+          {copied ? "已复制" : "复制"}
+        </Button>
+      </div>
+      <div className="flex flex-col gap-1.5 text-xs/relaxed text-muted-foreground">
+        <p>
+          在终端里运行，按提示选择你用的助手；加上 <span className="font-mono">-g</span> 则装到全局，所有项目都能用。然后把下载的 config.json
+          交给助手，直接说要什么，例如：
+        </p>
+        <ul className="list-disc pl-5">
+          <li>加一个 SOCKS 入站，让局域网里的其他设备也能用</li>
+          <li>让 Android 上的某个 App 不经过 sing-box</li>
+          <li>这个网站在 Non-CN 模式下为什么走了代理？</li>
+        </ul>
+        <p>
+          安装方式详见{" "}
+          <a href="https://www.skills.sh/docs/cli" target="_blank" rel="noreferrer" className="text-foreground underline underline-offset-2">
+            skills CLI 文档
+          </a>
+          。
+        </p>
+      </div>
+    </Panel>
   );
 }
 
@@ -2017,6 +2065,7 @@ export default function App() {
             <Boxes className="size-5 shrink-0 text-primary" aria-hidden />
             <h1 className="mr-auto truncate text-sm font-semibold">
               sing-box <span className="hidden min-[400px]:inline">配置</span>生成器
+              <span className="ml-2 hidden font-normal text-muted-foreground md:inline">DNS、IPv6 与分流的最佳实践</span>
             </h1>
             <Select
               value={active.id}

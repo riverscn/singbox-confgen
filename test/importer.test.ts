@@ -86,6 +86,10 @@ describe("importing proxy groups", () => {
       { type: "selector", tag: "hk", outbounds: ["a", "b", "direct"], default: "b" },
       { type: "urltest", tag: "fast", outbounds: ["hk", "c"], interval: "3m", tolerance: 80 },
       { type: "urltest", tag: "empty", outbounds: ["direct"] },
+      // SFM re-saves durations the way Go prints them.
+      { type: "urltest", tag: "go-default", outbounds: ["a"], interval: "3m0s" },
+      { type: "urltest", tag: "go-long", outbounds: ["a"], interval: "1h30m0s" },
+      { type: "urltest", tag: "odd", outbounds: ["a"], interval: "1.5ms" },
       { type: "trojan", tag: "a", server: "a.example.org", server_port: 443, password: "p" },
       { type: "trojan", tag: "b", server: "b.example.org", server_port: 443, password: "p" },
       { type: "trojan", tag: "c", server: "c.example.org", server_port: 443, password: "p" },
@@ -96,9 +100,13 @@ describe("importing proxy groups", () => {
   const id = (tag: string) => [...r.nodes, ...r.groups].find((x) => x.tag === tag)!.id;
 
   it("imports user groups with members by id, skipping proxy and auto", () => {
-    expect(r.groups.map((g) => g.tag)).toEqual(["hk", "fast"]);
+    expect(r.groups.map((g) => g.tag)).toEqual(["hk", "fast", "go-default", "go-long", "odd"]);
     expect(r.groups[0]).toMatchObject({ type: "selector", members: [id("a"), id("b")], defaultMember: id("b") });
     expect(r.groups[1]).toMatchObject({ type: "urltest", members: [id("hk"), id("c")], interval: "", tolerance: 80 });
+  });
+
+  it("rewrites Go-style intervals in the form the editor takes", () => {
+    expect(r.groups.slice(2).map((g) => g.interval)).toEqual(["", "90m", "1.5ms"]);
   });
 
   it("takes direct offering from proxy/auto, and explains what was dropped", () => {

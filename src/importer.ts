@@ -26,6 +26,23 @@ const GROUP_TYPES = ["selector", "urltest"];
 /** Group tags the generator creates itself; not imported as user groups. */
 const RESERVED_GROUPS = ["proxy", "auto"];
 
+const UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1, us: 0.001, "µs": 0.001, ns: 0.000001 };
+
+/**
+ * A duration in the single-unit form the editor takes (`3m`, `90s`). SFM re-saves durations the
+ * way Go prints them (`3m0s`, `1h30m0s`); anything that is not a whole number of milliseconds is
+ * kept as written.
+ */
+function shortDuration(v: unknown): string {
+  if (typeof v !== "string") return "";
+  const parts = [...v.matchAll(/(\d+(?:\.\d+)?)(h|ms|m|s|us|µs|ns)/g)];
+  if (!parts.length || parts.map((p) => p[0]).join("") !== v) return v;
+  const ms = parts.reduce((sum, [, n, unit]) => sum + Number(n) * UNIT_MS[unit], 0);
+  if (!Number.isInteger(ms)) return v;
+  for (const unit of ["h", "m", "s"]) if (ms % UNIT_MS[unit] === 0) return `${ms / UNIT_MS[unit]}${unit}`;
+  return `${ms}ms`;
+}
+
 /** Every peer is routed everything, as the legacy outbound did with its single peer. */
 const ALL_IPS = ["0.0.0.0/0", "::/0"];
 
@@ -181,7 +198,8 @@ export function importSingBoxConfig(text: string): ImportResult {
     if (src.type === "selector" && typeof src.default === "string" && idOf.has(src.default)) g.defaultMember = idOf.get(src.default)!;
     if (src.type === "urltest") {
       g.testUrl = src.url && src.url !== "https://www.gstatic.com/generate_204" ? src.url : "";
-      g.interval = typeof src.interval === "string" && src.interval !== "3m" ? src.interval : "";
+      const interval = shortDuration(src.interval);
+      g.interval = interval !== "3m" ? interval : "";
       g.tolerance = typeof src.tolerance === "number" && src.tolerance !== 50 ? src.tolerance : null;
     }
     if (g.members.length) kept.push(g);

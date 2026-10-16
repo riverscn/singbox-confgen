@@ -2,7 +2,7 @@ import { Fragment, useEffect, useId, useMemo, useRef, useState, type HTMLAttribu
 import type { Platform, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, Settings, Tailnet } from "./types";
 import { TEMPLATES } from "./templates";
 import { REMOTE_DNS, generateConfig, nodeObject, parseDomainList, parseRuleList, tailnetEndpoint, validate, type Issue } from "./generate";
-import { freshTag, newGroup, newNode, newTailnet, randomSecret } from "./defaults";
+import { defaultSettings, freshTag, newGroup, newNode, newTailnet, randomSecret } from "./defaults";
 import { clearStore, defaultStore, loadStore, newSavedProfile, saveStore, type Store } from "./storage";
 import { fitImport, importSingBoxConfig, type ImportResult } from "./importer";
 import { useDialogs } from "./dialog";
@@ -1382,13 +1382,10 @@ export default function App() {
       await dialogs.alert("导入失败", (e as Error).message);
       return;
     }
-    // Untouched template examples (still pointing at example.com) are replaced rather than kept.
-    const keep = profile.nodes.every(isExampleNode) ? [] : profile.nodes;
-    const { nodes, tailnets, groups, renamed } = fitImport(result, [
-      ...keep.map((n) => n.tag),
-      ...profile.settings.tailnets.map((t) => t.tag),
-      ...profile.groups.map((g) => g.tag),
-    ]);
+    // Always a new profile of its own, never merged into one being edited: nothing there gets
+    // renamed or doubled, and none of the template's examples come along.
+    const { nodes, tailnets, groups, renamed } = fitImport(result);
+    const name = uniqueName(file.name.replace(/\.[^.]*$/, "") || "导入的配置", store);
     const content = (
       <ImportSummary
         rows={[
@@ -1396,27 +1393,18 @@ export default function App() {
           { label: "tailnet", tags: tailnets.map((t) => t.tag) },
           { label: "代理组", tags: groups.map((g) => g.tag) },
         ]}
-        notes={[
-          ...(keep.length < profile.nodes.length ? ["现有的示例节点会被替换"] : []),
-          ...(renamed.length ? [`标签重复，已改名：${renamed.join("、")}`] : []),
-          ...result.notes,
-        ]}
+        notes={[...(renamed.length ? [`与本工具自带的出站重名，已改名：${renamed.join("、")}`] : []), ...result.notes]}
       />
     );
-    const ok = await dialogs.confirm(`导入到「${active.name}」`, {
-      message: `来自 ${file.name}。只导入节点、Tailscale 和代理组；DNS 和分流由本工具的策略生成。`,
+    const ok = await dialogs.confirm(`新建配置「${name}」`, {
+      message: `从 ${file.name} 导入节点、Tailscale 和代理组；DNS 和分流由本工具的策略生成，其他设置用默认值。当前配置「${active.name}」不受影响。`,
       content,
-      confirmLabel: "导入",
+      confirmLabel: "新建",
     });
     if (!ok) return;
-    setProfile((p) => ({
-      ...p,
-      nodes: [...keep, ...nodes],
-      groups: [...p.groups, ...groups],
-      settings: { ...p.settings, tailnets: [...p.settings.tailnets, ...tailnets] },
-    }));
+    addProfile(name, { version: 2, nodes, groups, settings: { ...defaultSettings(), tailnets } });
     setTab(nodes.length ? "nodes" : "tailscale");
-    notify(`已导入 ${nodes.length} 个节点、${tailnets.length} 个 tailnet${groups.length ? `、${groups.length} 个代理组` : ""}`);
+    notify(`已新建「${name}」：${nodes.length} 个节点、${tailnets.length} 个 tailnet${groups.length ? `、${groups.length} 个代理组` : ""}`);
   };
 
   const tailnets = profile.settings.tailnets;
@@ -1563,7 +1551,7 @@ export default function App() {
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => fileInput.current?.click()}>
-          <FileUp />从 sing-box 配置导入节点…
+          <FileUp />从 sing-box 配置新建…
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -1687,11 +1675,11 @@ export default function App() {
 
             {tab === "nodes" && (
               <>
-                <Intro>每个节点是一段 sing-box 出站配置，可以按协议模板新加，也可以从现有的 sing-box 配置导入。拖动左侧手柄调整顺序，客户端里按此顺序显示。</Intro>
+                <Intro>每个节点是一段 sing-box 出站配置，可以按协议模板新加，也可以从现有的 sing-box 配置新建一套。拖动左侧手柄调整顺序，客户端里按此顺序显示。</Intro>
                 <ListHead title="节点" count={profile.nodes.length}>
                   <Button variant="ghost" onClick={() => fileInput.current?.click()}>
                     <FileUp />
-                    导入
+                    从配置文件新建
                   </Button>
                   <AddNode usedTags={profile.nodes.map((n) => n.tag)} onAdd={addNode} />
                 </ListHead>
@@ -1822,7 +1810,7 @@ export default function App() {
               {errors.length
                 ? "有错误时 sing-box 可能无法加载这份配置。点击条目跳到对应位置。"
                 : examplesLeft
-                  ? "节点还是模板里的示例，需要换成你自己的服务器，或从现有的 sing-box 配置导入。"
+                  ? "节点还是模板里的示例，需要换成你自己的服务器，或从现有的 sing-box 配置新建一套。"
                   : warnings.length
                   ? "可以生成，但建议看一下这些提醒。点击条目跳到对应位置。"
                   : "没有发现问题，可以导入客户端。"}

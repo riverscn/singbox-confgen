@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { generateConfig } from "../src/generate";
+import { generateConfig, validate as issues } from "../src/generate";
 import Ajv2020 from "ajv/dist/2020";
 import { fitImport, importSingBoxConfig } from "../src/importer";
 import { normalize } from "./normalize";
@@ -181,34 +181,40 @@ describe("fitting an import into a profile", () => {
   const r = importSingBoxConfig(
     JSON.stringify({
       outbounds: [
-        { type: "selector", tag: "hk", outbounds: ["a", "b"] },
-        { type: "shadowsocks", tag: "a", server: "a.example.org", server_port: 443, method: "2022-blake3-aes-128-gcm", password: "p", detour: "b" },
-        { type: "shadowtls", tag: "b", server: "b.example.org", server_port: 443, version: 3, password: "p" },
-        { type: "trojan", tag: "auto", server: "c.example.org", server_port: 443, password: "p" },
+        { type: "selector", tag: "hk", outbounds: ["a", "auto"] },
+        { type: "shadowsocks", tag: "a", server: "a.example.org", server_port: 443, method: "aes-128-gcm", password: "p", detour: "auto" },
+        { type: "shadowtls", tag: "auto", server: "b.example.org", server_port: 443, version: 3, password: "p" },
+        { type: "trojan", tag: "direct", server: "c.example.org", server_port: 443, password: "p" },
       ],
-      endpoints: [{ type: "tailscale", tag: "ts", detour: "b" }],
+      endpoints: [{ type: "tailscale", tag: "proxy", detour: "auto" }],
     }),
   );
+  const fitted = fitImport(r);
 
-  it("renames clashes across nodes, tailnets, groups and reserved tags", () => {
-    const fitted = fitImport(r, ["b", "hk", "ts"]);
-    expect(fitted.nodes.map((n) => n.tag)).toEqual(["a", "b-2", "auto-2"]);
-    expect(fitted.tailnets.map((t) => t.tag)).toEqual(["ts-2"]);
-    expect(fitted.groups.map((g) => g.tag)).toEqual(["hk-2"]);
-    expect(fitted.renamed).toEqual(["b → b-2", "auto → auto-2", "ts → ts-2", "hk → hk-2"]);
+  it("renames tags the generator uses itself", () => {
+    expect(fitted.nodes.map((n) => n.tag)).toEqual(["a", "auto-2", "direct-2"]);
+    expect(fitted.tailnets.map((t) => t.tag)).toEqual(["proxy-2"]);
+    expect(fitted.groups.map((g) => g.tag)).toEqual(["hk"]);
+    expect(fitted.renamed).toEqual(["auto → auto-2", "direct → direct-2", "proxy → proxy-2"]);
     // Members are by id, so the group keeps its nodes through the renames.
     expect(fitted.groups[0].members).toEqual(r.nodes.slice(0, 2).map((n) => n.id));
   });
 
   it("points detours at the renamed nodes", () => {
-    const fitted = fitImport(r, ["b"]);
-    expect(JSON.parse(fitted.nodes[0].body).detour).toBe("b-2");
-    expect(JSON.parse(fitted.tailnets[0].endpoint).detour).toBe("b-2");
+    expect(JSON.parse(fitted.nodes[0].body).detour).toBe("auto-2");
+    expect(JSON.parse(fitted.tailnets[0].endpoint).detour).toBe("auto-2");
+  });
+
+  it("makes a profile without errors", () => {
+    const base = sample("full-apple");
+    const profile = { ...base, nodes: fitted.nodes, groups: fitted.groups, settings: { ...base.settings, tailnets: fitted.tailnets } };
+    expect(issues(profile).filter((i) => i.level === "error")).toEqual([]);
+    expect(validate(generateConfig(profile))).toBe(true);
   });
 
   it("leaves everything as it was without clashes", () => {
     const clean = importSingBoxConfig(JSON.stringify({ outbounds: [{ type: "socks", tag: "s", server: "127.0.0.1", server_port: 1080 }] }));
-    const fitted = fitImport(clean, ["x"]);
+    const fitted = fitImport(clean);
     expect(fitted.nodes).toEqual(clean.nodes);
     expect(fitted.renamed).toEqual([]);
   });

@@ -221,12 +221,12 @@ export interface FittedImport {
 }
 
 /**
- * Fit an import next to the tags a profile already has. Nodes, tailnets and groups share one
- * namespace, so a tag clashing with any existing, reserved or earlier incoming tag is renamed
- * (`a` → `a-2`), and detours to a renamed node follow it.
+ * Fit an import into a profile of its own. Nodes, tailnets and groups share one namespace with
+ * the outbounds the generator adds, so a tag clashing with those or with an earlier incoming tag
+ * is renamed (`auto` → `auto-2`), and detours to a renamed node follow it.
  */
-export function fitImport(result: ImportResult, existing: string[]): FittedImport {
-  const used = new Set([...RESERVED_TAGS, ...existing]);
+export function fitImport(result: ImportResult): FittedImport {
+  const used = new Set(RESERVED_TAGS);
   const renames = new Map<string, string>();
   const fit = <T extends { tag: string }>(items: T[]): T[] =>
     items.map((x) => {

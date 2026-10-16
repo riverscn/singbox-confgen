@@ -1479,6 +1479,7 @@ function StartPage(props: {
 }
 
 const REPO_URL = "https://github.com/riverscn/singbox-confgen";
+const CLIENTS_URL = "https://sing-box.sagernet.org/zh/clients/";
 const SKILL_INSTALL = "npx skills add riverscn/singbox-confgen";
 
 /** The GitHub mark; lucide has no brand icons. */
@@ -2084,11 +2085,22 @@ export default function App() {
               href={REPO_URL}
               target="_blank"
               rel="noreferrer"
-              className={buttonVariants({ variant: "ghost", size: "icon-sm", className: "mr-auto text-muted-foreground" })}
+              className={buttonVariants({ variant: "ghost", size: "icon-sm", className: "text-muted-foreground" })}
               aria-label="GitHub 源码"
               title="GitHub 源码"
             >
               <GitHubIcon className="size-3.5" />
+            </a>
+            <a
+              href={CLIENTS_URL}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonVariants({ variant: "ghost", size: "sm", className: "mr-auto shrink-0 text-muted-foreground" })}
+              aria-label="sing-box 客户端"
+              title="sing-box 客户端"
+            >
+              <Download className="size-3.5" />
+              <span className="hidden min-[480px]:inline">sing-box 客户端</span>
             </a>
             <Select
               value={active.id}

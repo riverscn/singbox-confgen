@@ -10,7 +10,10 @@ import { CodeEditor } from "./code-editor";
 import { useDragSort } from "./drag-sort";
 import { changedLines, linePaths, type LineRange } from "./diff";
 import {
+  ArrowRight,
   Boxes,
+  Cable,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -25,14 +28,19 @@ import {
   FileUp,
   Info,
   GripVertical,
+  Network,
   Pencil,
   RefreshCw,
   Plus,
   RotateCcw,
   Search,
+  ShieldCheck,
+  Split,
   Trash2,
   TriangleAlert,
+  Waypoints,
   WrapText,
+  Zap,
 } from "lucide-react";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
@@ -795,12 +803,77 @@ function Panel(props: { title?: ReactNode; description?: ReactNode; children: Re
   );
 }
 
+/** The remote resolver as it reads in prose, e.g. "Google DoT". */
+function remoteDnsName(s: Settings): string {
+  if (s.remoteDns.provider === "custom") return "自定义的远程 DNS";
+  return `${REMOTE_DNS[s.remoteDns.provider].label} ${s.remoteDns.protocol === "tls" ? "DoT" : "DoH"}`;
+}
+
+/**
+ * What the chosen mode does to traffic, DNS and IPv6: the parts of the design a user can't see in
+ * the form but will notice in use. Follows the remote DNS and ECS settings so it reads as fact.
+ */
+function ModeBehavior(props: { settings: Settings }) {
+  const { settings: s } = props;
+  const remote = remoteDnsName(s);
+  const proxied: [string, ReactNode] = [
+    "走代理的",
+    <>
+      经 <span className="font-mono">proxy</span> 向 {remote} 查询，
+      {s.clientSubnet ? "带上设置里的 ECS 网段" : "不带 ECS，CDN 按代理服务器的位置就近分配"}
+      。只要 IPv4：出口始终是同一台服务器，风控严格的网站不会因出口变化反复要求验证；应用也不会因为选了 IPv6、而服务器没有 IPv6 而连不上。
+    </>,
+  ];
+  const direct: [string, ReactNode] = [
+    "直连的",
+    "只问当前网络下发的 DNS，就近拿到国内节点；国内的公共 DNS 并不比它干净，换过去只会多一个依赖。IPv6 照常使用，本机没有公网 IPv6 时只用 IPv4，应用不会卡在连不上的 IPv6 上。",
+  ];
+  const lan: [string, ReactNode] = [
+    "局域网",
+    "设备名（如 nas、nas.lan）和 .home.arpa 这类内网域名用本地网络解析，内网地址一律直连，不受模式影响。",
+  ];
+  const byMode: Record<Settings["defaultMode"], [string, ReactNode][]> = {
+    GFWList: [
+      ["分流", "gfwlist 收录的域名和 Telegram 走代理，其余直连。被墙但没收录的网站，加到下面的「代理域名和 IP」。"],
+      proxied,
+      direct,
+      lan,
+    ],
+    "Non-CN": [
+      [
+        "分流",
+        `国内域名列表里的直连；其余域名同时问本地 DNS 和 ${remote}：本地答出国内 IP 或内网 IP 就直连，否则用远程结果走代理。本地 DNS 500 毫秒没答复就不等它，代价只是这个域名这次走了代理。`,
+      ],
+      proxied,
+      direct,
+      lan,
+    ],
+    Global: [["分流", "全部走代理，自定义的直连名单也不生效；tailnet 照常可用。"], proxied, lan],
+    Direct: [["分流", "全部直连，相当于暂时关掉代理；tailnet 照常可用。"], direct, lan],
+  };
+  const rows = byMode[s.defaultMode];
+  return (
+    <div className="flex flex-col gap-2 rounded-md bg-muted/50 px-3 py-2.5">
+      <p className="text-xs font-medium">{s.defaultMode} 模式下</p>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-xs/relaxed">
+        {rows.map(([term, desc]) => (
+          <Fragment key={term}>
+            <dt className="text-muted-foreground">{term}</dt>
+            <dd className="text-muted-foreground">{desc}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 function RoutingCard(props: { settings: Settings; onChange: (patch: Partial<Settings>) => void }) {
   const { settings: s } = props;
   return (
     <>
       <Panel title="默认模式" description="启动时使用的模式，运行中可在客户端或 Clash API 中切换">
         <ChoiceCards value={s.defaultMode} options={MODES} onChange={(defaultMode) => props.onChange({ defaultMode })} ariaLabel="默认模式" />
+        <ModeBehavior settings={s} />
       </Panel>
       <Panel
         title="自定义列表"
@@ -1070,8 +1143,173 @@ function uniqueName(name: string, store: Store): string {
   for (let i = 2; ; i++) if (!names.includes(`${name} ${i}`)) return `${name} ${i}`;
 }
 
-type Tab = "nodes" | "groups" | "routing" | "tailscale" | "settings";
+const FEATURES: { icon: typeof Split; title: string; body: string }[] = [
+  {
+    icon: Split,
+    title: "国内走得快，国外查得准",
+    body: "直连用本地 DNS，就近拿到国内节点；走代理的经代理查询，不受污染。",
+  },
+  {
+    icon: Network,
+    title: "出口不漂移",
+    body: "走代理只用 IPv4，始终从同一台服务器出去：不触发风控验证，也没有 IPv6 的“假连通”。",
+  },
+  {
+    icon: Zap,
+    title: "拿不准的域名，两边一起问",
+    body: "Non-CN 模式下本地和远程 DNS 同时查，答出国内 IP 就直连，否则走代理。",
+  },
+  {
+    icon: Waypoints,
+    title: "切一次节点，全部跟上",
+    body: "代理流量、远程 DNS、规则集下载共用一个出口，换节点时一起换。",
+  },
+  {
+    icon: Cable,
+    title: "家里、公司，都能直接连",
+    body: "局域网设备和内网地址在任何模式下都直连；在外面，用内置的 Tailscale 连回 tailnet。",
+  },
+  {
+    icon: ShieldCheck,
+    title: "不上传，经得起检查",
+    body: "页面禁止发出任何网络请求，数据只存在本地；配置在三个平台上用官方 sing-box check 检查过。",
+  },
+];
+
+/** One step of the getting-started list: a number, or a check once it is done. */
+function Step(props: { n: number; done?: boolean; title: ReactNode; children: ReactNode; actions?: ReactNode }) {
+  return (
+    <li className="flex gap-3">
+      <span
+        className={cn(
+          "mt-px flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-medium tabular-nums",
+          props.done ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+        )}
+        aria-label={props.done ? "已完成" : undefined}
+      >
+        {props.done ? <Check className="size-3" /> : props.n}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <p className="text-xs font-medium">{props.title}</p>
+        <div className="text-xs/relaxed text-muted-foreground">{props.children}</div>
+        {props.actions && <div className="flex flex-wrap gap-1.5 pt-0.5">{props.actions}</div>}
+      </div>
+    </li>
+  );
+}
+
+/** The first tab: what the generator is for, what sets its config apart, and where to go next. */
+function StartPage(props: {
+  settings: Settings;
+  nodesReady: boolean;
+  status: string;
+  onGo: (tab: Tab) => void;
+  onImport: () => void;
+  onDownload: () => void;
+}) {
+  const { settings: s } = props;
+  return (
+    <>
+      <section className="flex flex-col gap-2 pt-1">
+        <h2 className="text-base font-semibold">你只管填节点，DNS 和分流已经想好了</h2>
+        <p className="max-w-prose text-xs/relaxed text-muted-foreground">
+          一份 sing-box 配置用着别扭，问题多半不在节点，而在看不见的地方：国内网站被解析到海外、被墙的域名拿到污染的地址、一开全局就连不上家里的
+          NAS、IPv6 悄悄绕开了代理。这些坑都在日常使用中实测过，并给出了对策，最后做成了这张表单。
+        </p>
+      </section>
+
+      <section className="grid gap-2 sm:grid-cols-2" aria-label="特色">
+        {FEATURES.map(({ icon: Icon, title, body }) => (
+          <div key={title} className="flex gap-2.5 rounded-lg bg-card p-3 ring-1 ring-foreground/10">
+            <Icon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+            <div className="flex flex-col gap-0.5">
+              <h3 className="text-xs font-medium">{title}</h3>
+              <p className="text-xs/relaxed text-muted-foreground">{body}</p>
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <Panel title="开始使用">
+        <ol className="flex flex-col gap-4">
+          <Step
+            n={1}
+            done={props.nodesReady}
+            title="填入你的节点"
+            actions={
+              <>
+                <Button variant="outline" size="sm" onClick={() => props.onGo("nodes")}>
+                  编辑节点
+                  <ArrowRight />
+                </Button>
+                <Button variant="ghost" size="sm" onClick={props.onImport}>
+                  <FileUp />
+                  从配置文件新建
+                </Button>
+              </>
+            }
+          >
+            从协议模板添加，或者直接导入客户端里正在用的配置：节点和 Tailscale 原样带过来，DNS 和分流按这里的策略重写。
+            {!props.nodesReady && "现在还是示例节点。"}
+          </Step>
+          <Step
+            n={2}
+            title="选一个默认模式"
+            actions={
+              <Button variant="outline" size="sm" onClick={() => props.onGo("routing")}>
+                分流设置
+                <ArrowRight />
+              </Button>
+            }
+          >
+            现在是 <span className="font-medium text-foreground">{s.defaultMode}</span>。四种模式都会写进配置，用的时候在客户端里随手切换。遇到被墙却没收录进
+            gfwlist 的网站，加进自定义代理域名就好。
+          </Step>
+          <Step
+            n={3}
+            title="其余都是可选的"
+            actions={
+              <>
+                <Button variant="ghost" size="sm" onClick={() => props.onGo("groups")}>
+                  代理组
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => props.onGo("tailscale")}>
+                  Tailscale
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => props.onGo("settings")}>
+                  设置
+                </Button>
+              </>
+            }
+          >
+            节点多了可以按地区、用途分组；想连回家里或公司就加上 Tailscale；目标平台、代理 DNS、Clash API 在设置里。一项不改，也能直接用。
+          </Step>
+          <Step
+            n={4}
+            title="交给客户端"
+            actions={
+              <Button size="sm" onClick={props.onDownload}>
+                <Download />
+                下载 config.json
+              </Button>
+            }
+          >
+            检查结果：{props.status}。导入 SFM、SFI、SFA，或交给命令行 <span className="font-mono">sing-box run -c config.json</span>（1.14
+            及以上）。最后一件事：把浏览器的“安全 DNS”保持“自动”或关掉，否则它会绕开这一切。
+          </Step>
+        </ol>
+      </Panel>
+
+      <p className="max-w-prose text-xs/relaxed text-muted-foreground">
+        为什么不能逐条改规则？因为它们环环相扣：查询的先后、并行的时机、IPv6 的处理，动一条就可能悄悄出错。所以这里只给一套策略和四种模式；真要深度定制，直接改生成的 JSON。
+      </p>
+    </>
+  );
+}
+
+type Tab = "start" | "nodes" | "groups" | "routing" | "tailscale" | "settings";
 const TABS: { id: Tab; label: string }[] = [
+  { id: "start", label: "开始" },
   { id: "nodes", label: "节点" },
   { id: "groups", label: "代理组" },
   { id: "routing", label: "分流" },
@@ -1087,7 +1325,7 @@ function loadTab(): Tab {
   } catch {
     // Storage blocked: start on the first tab.
   }
-  return "nodes";
+  return "start";
 }
 
 /**
@@ -1213,6 +1451,7 @@ export default function App() {
   const [focusId, setFocusId] = useState<string | null>(null);
   const [wrap, setWrap] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const settingsPane = useRef<HTMLElement>(null);
   const active = store.profiles.find((p) => p.id === store.activeId) ?? store.profiles[0];
   const profile = active.profile;
   const setProfile = (update: (p: Profile) => Profile) =>
@@ -1670,8 +1909,24 @@ export default function App() {
 
           {/* A scroll container clips what is drawn outside its children: the 1px rings around cards and
               panels, and focus rings. The negative margin plus padding leaves room for them. */}
-          <section className="flex min-w-0 flex-col gap-3 pb-16 lg:-mx-1 lg:-mt-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-1 lg:pt-1 lg:pr-3 lg:pb-8" aria-label={TABS.find((t) => t.id === tab)?.label}>
+          <section ref={settingsPane} className="flex min-w-0 flex-col gap-3 pb-16 lg:-mx-1 lg:-mt-1 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-1 lg:pt-1 lg:pr-3 lg:pb-8" aria-label={TABS.find((t) => t.id === tab)?.label}>
             {sectionIssues(tab).length > 0 && <IssueList issues={sectionIssues(tab)} />}
+
+            {tab === "start" && (
+              <StartPage
+                settings={profile.settings}
+                nodesReady={profile.nodes.length > 0 && !examplesLeft}
+                status={statusText}
+                onGo={(t) => {
+                  setTab(t);
+                  // Land at the top of the new tab, not where the start page was scrolled to.
+                  settingsPane.current?.scrollTo(0, 0);
+                  window.scrollTo(0, 0);
+                }}
+                onImport={() => fileInput.current?.click()}
+                onDownload={downloadConfig}
+              />
+            )}
 
             {tab === "nodes" && (
               <>
@@ -1783,9 +2038,11 @@ export default function App() {
             )}
 
             {tab === "settings" && <SettingsCard settings={profile.settings} onChange={setSettings} />}
-            <p className="mt-6 text-center text-xs text-muted-foreground">
-              纯前端运行，配置只保存在这个浏览器里，不会上传。生成的配置适用于 sing-box 1.14 及以上。
-            </p>
+            {tab !== "start" && (
+              <p className="mt-6 text-center text-xs text-muted-foreground">
+                纯前端运行，配置只保存在这个浏览器里，不会上传。生成的配置适用于 sing-box 1.14 及以上。
+              </p>
+            )}
           </section>
         </Tabs>
 

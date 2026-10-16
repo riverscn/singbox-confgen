@@ -2,6 +2,8 @@
 
 **填入节点，DNS、IPv6 与分流按最佳实践配好。**
 
+**在线使用：<https://sing-box-confgen.riverleaf.dev>**
+
 [![CI](https://github.com/riverscn/singbox-confgen/actions/workflows/ci.yml/badge.svg)](https://github.com/riverscn/singbox-confgen/actions/workflows/ci.yml)
 ![sing-box 1.14+](https://img.shields.io/badge/sing--box-1.14%2B-blue)
 ![纯前端](https://img.shields.io/badge/运行-纯浏览器-green)

@@ -139,7 +139,9 @@ export function importSingBoxConfig(text: string): ImportResult {
         acceptDefaultResolvers: !!server?.accept_default_resolvers,
         dnsDomains,
         routes,
-        asProxy: grouped.has(tag) || typeof exit_node === "string",
+        // Only a selector offering the endpoint makes it a proxy choice; an exit node alone
+        // doesn't, since the source may reach the endpoint only through its own routes.
+        asProxy: grouped.has(tag),
         exitNode: typeof exit_node === "string" ? exit_node : "",
       });
     });

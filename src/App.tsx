@@ -1820,7 +1820,7 @@ export default function App() {
       />
     );
     const ok = await dialogs.confirm(`新建配置「${name}」`, {
-      message: `从 ${file.name} 导入${["节点", ...(groups.length ? ["代理组"] : []), ...(tailnets.length ? ["Tailscale"] : [])].join("、")}；DNS 和分流由本工具的策略生成，其他设置用默认值。当前配置「${active.name}」不受影响。`,
+      message: `从 ${file.name} 导入${["节点", ...(groups.length ? ["代理组"] : []), ...(tailnets.length ? ["Tailscale"] : [])].join("、").replace(/、([^、]+)$/, "和$1")}；DNS 和分流由本工具的策略生成，其他设置用默认值。当前配置「${active.name}」不受影响。`,
       content,
       confirmLabel: "新建",
     });

@@ -87,11 +87,14 @@
 
 - 核心策略只保留一套，不开放逐条编辑。规则之间相互依赖（race 规则的顺序、`speculative` 的位置等），随手改一条可能悄悄出错；需要深度定制的用户直接修改生成的 JSON。
 - 唯一开放的策略选项：走代理时使用的 DNS 服务器。除了三家预设，还可以选“自定义”，用一段 JSON 写任意 sing-box DNS 服务器（tcp/udp/tls/https/quic/h3），生成器填写 `tag: remote`，没写 `detour` 时补上 `proxy`。JSON 有误时报错，并暂时改用 Google，保证配置仍能加载。
-- 导入：直接读现有的 sing-box 配置（不再有本工具自己的导入导出格式），只取节点（代理类出站和 WireGuard/OpenConnect/OpenVPN 端点）和 Tailscale（端点，及其 DNS 服务器的 MagicDNS、默认 DNS、分域 DNS，额外路由，是否在代理组里）。DNS 和分流规则由本工具的策略生成。
+- 导入：直接读现有的 sing-box 或 Clash 配置（不再有本工具自己的导入导出格式）。sing-box 配置只取节点（代理类出站和 WireGuard/OpenConnect/OpenVPN 端点）和 Tailscale（端点，及其 DNS 服务器的 MagicDNS、默认 DNS、分域 DNS，额外路由，是否在代理组里）。DNS 和分流规则由本工具的策略生成。
   - 节点引用的 `domain_resolver` 如果在新配置里不存在（例如 `cn-dns`），会去掉并说明。
   - 源配置有代理组时，不在任何组里的节点（例如 ShadowTLS 这种 detour 辅助节点）导入后也不加入代理组。
-  - 追加到当前配置；标签冲突时自动改名；如果现有节点都还是模板示例，就直接替换。
+  - 总是新建一套配置，不并入正在编辑的配置；与本工具自带出站（`proxy`、`auto`、`direct`）重名的标签自动改名，detour 跟着改。
   - 测试：生成的配置再导入、再生成，节点、端点、DNS、路由规则完全一致；SFM 实际在用的配置也能正确导入。
+  - 也能导入 Clash（mihomo）配置（YAML，或同样结构的 JSON，按内容自动识别）：`proxies` 逐个转换为等价的 sing-box 出站或端点，字段对照参考 Sub-Store 的 sing-box producer 和 xmdhs/clash2singbox。sing-box 表达不了的节点（ShadowsocksR、TUIC v4、xhttp 等传输、AmneziaWG、restls 等插件）跳过并列出；`shadow-tls` 插件拆成 ShadowTLS 辅助节点加 detour；`dialer-proxy` 指向节点时转为 `detour`，指向代理组时去掉并说明（这里的 detour 只接受节点）。
+  - Clash 代理组：`select` → `selector`，`url-test` → `urltest`（`url`、`interval` 秒、`tolerance`）；`fallback`、`load-balance` 没有对应类型，改为 `urltest` 并说明；`relay` 展开成链式节点（后面每一跳复制一份并设 `detour`，最后一跳用组名，其他组仍可引用）。`include-all` 和 `filter`/`exclude-filter`/`exclude-type` 在导入时展开成具体成员（`(?i)` 转为忽略大小写）；`use` 引用的 proxy-providers 需要联网，不导入；`DIRECT`/`REJECT` 等内置策略不能当成员，去掉并说明；成员为空的组跳过，引用它的组随之去掉该成员。规则、DNS 不导入。
+  - Clash 的节点名和组名大多含中文、emoji 和空格，所以标签和组名只要求非空、首尾无空白、不含控制字符（sing-box 本身接受任意字符串）。
 - 支持全平台（Apple、Android、Linux、Windows）。
 - 节点用 JSON 编辑（可写注释），从协议模板开始，覆盖 1.14 可作为代理节点的全部 18 种协议：15 种出站，加上 WireGuard、OpenConnect、OpenVPN 三种端点（WireGuard 出站在 1.14 中只剩空壳，必须用端点）。
   - 生成器只负责：填写 `tag`；`type` 为端点类型的放进 `endpoints`，其余放进 `outbounds`；没写 `domain_resolver` 时补上 `local`（节点服务器是直连访问的）；勾选“加入代理组”的节点进入 `proxy` 和 `auto`。

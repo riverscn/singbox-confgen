@@ -1,7 +1,8 @@
 // Import nodes and Tailscale tailnets from an existing sing-box config (any version close to
-// 1.14, including SFM's re-saved form). Everything else in it (DNS, routing) is left out: the
-// generator's own policy replaces it.
+// 1.14, including SFM's re-saved form), or nodes and groups from a Clash one (src/clash.ts).
+// Everything else in it (DNS, routing) is left out: the generator's own policy replaces it.
 
+import { importClashConfig, isClashConfig } from "./clash";
 import { parseJsonc } from "./generate";
 import { newGroup, newNode, newTailnet } from "./defaults";
 import { ENDPOINT_TYPES, NODE_TYPES } from "./templates";
@@ -102,6 +103,19 @@ function nodeBody(o: Json, keptResolvers: Set<string>): Json {
   // SFM writes server_port 0 next to server_ports.
   if (body.server_port === 0 && body.server_ports) delete body.server_port;
   return body;
+}
+
+/** A sing-box config (JSON) or a Clash one (YAML, or the same as JSON), told apart by content. */
+export function importConfig(text: string): ImportResult {
+  if (!/^\s*[{/]/.test(text)) return importClashConfig(text);
+  let parsed: unknown;
+  try {
+    parsed = parseJsonc(text);
+  } catch {
+    // Not JSON after all: let the sing-box importer say why.
+    return importSingBoxConfig(text);
+  }
+  return isClashConfig(parsed) ? importClashConfig(parsed) : importSingBoxConfig(text);
 }
 
 export function importSingBoxConfig(text: string): ImportResult {

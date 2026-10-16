@@ -22,7 +22,7 @@
 
 ## 三步上手
 
-1. **填节点**：从协议模板添加，或者导入客户端里正在用的 `config.json`（节点和 Tailscale 原样带过来，DNS 和分流按这里的策略重写）。
+1. **填节点**：从协议模板添加，或者导入客户端里正在用的配置：sing-box 的 `config.json`（节点和 Tailscale），或 Clash（mihomo）的 YAML（节点和代理组）。DNS 和分流按这里的策略重写。
 2. **选默认模式**：GFWList、Non-CN、Global、Direct 四种都会写进配置，在客户端里随时切换。被墙但不在 gfwlist 里的网站，加进自定义代理域名。
 3. **下载 `config.json`**：导入 SFM、SFI、SFA，或运行 `sing-box run -c config.json`。需要 sing-box **1.14** 及以上。
 
@@ -136,6 +136,7 @@ git push --follow-tags
 - `src/types.ts`：设置的数据模型；`src/defaults.ts`：默认值；`src/templates.ts`：节点协议模板。
 - `src/legacy.ts`：把旧版（表单）保存的服务器迁移为 JSON 节点。
 - `src/importer.ts`：从现有 sing-box 配置导入节点和 Tailscale。
+- `src/clash.ts`：从 Clash（mihomo）配置导入节点和代理组。
 - `src/App.tsx`：界面；`src/storage.ts`：本地保存和导入时的兼容处理。
 - `test/generate.test.ts`：
   - 用一份“个人配置”还原蓝本（`test/fixtures/tiger-baseline.json`，已匿名化）的非 DNS 部分；

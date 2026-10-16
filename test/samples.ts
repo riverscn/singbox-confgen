@@ -1,7 +1,9 @@
 // Sample profiles covering every node template and feature/platform combination.
 // Template placeholders are filled with well-formed values so checks exercise field structure.
 // Shared by the schema test and scripts/gen-check-configs.ts (`sing-box check`).
+import { readFileSync } from "node:fs";
 import { parseJsonc } from "../src/generate";
+import { fitImport, importConfig } from "../src/importer";
 import { blueprintProfile, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
 import { TEMPLATES } from "../src/templates";
 import type { Profile } from "../src/types";
@@ -123,6 +125,11 @@ export function sampleProfiles(): { name: string; profile: Profile }[] {
     p.nodes = [newNode({ tag: "hy2", body: filledBody("hysteria2") })];
     p.settings.remoteDns = { ...p.settings.remoteDns, provider: "custom" }; // the default custom template
     samples.push({ name: "dns-custom", profile: p });
+  }
+  {
+    // Everything the Clash importer maps, as it comes out of an import.
+    const { nodes, groups } = fitImport(importConfig(readFileSync(new URL("./fixtures/clash-mihomo.yaml", import.meta.url), "utf8")));
+    samples.push({ name: "clash-import", profile: { ...blueprintProfile(), nodes, groups } });
   }
   return samples;
 }

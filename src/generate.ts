@@ -766,7 +766,8 @@ export interface Issue {
   id?: string;
 }
 
-const TAG_RE = /^[A-Za-z0-9._-]+$/;
+/** Any non-empty name (Clash-style names like 「🇭🇰 香港 01」 included) without edge whitespace or control characters. */
+const TAG_RE = /^(?!\s)[^\p{Cc}]*\S$/u;
 
 /** Paths of secret-like fields left empty anywhere in a node, e.g. `tls.reality.public_key`. */
 function emptySecretPaths(v: unknown, path = ""): string[] {
@@ -819,7 +820,7 @@ export function validate(profile: Profile): Issue[] {
   else if (!profile.nodes.some((n) => n.inGroups)) err(NODES, "至少要有一个节点加入代理组");
   for (const n of profile.nodes) {
     const at: Where = { section: "nodes", id: n.id, label: `节点「${n.tag || "(未命名)"}」` };
-    if (!TAG_RE.test(n.tag)) err(at, "标签只能包含字母、数字、. _ -");
+    if (!TAG_RE.test(n.tag)) err(at, "标签不能为空，首尾不能有空格");
     addTag(n.tag);
     const { object, error } = nodeObject(n);
     if (error) {
@@ -840,7 +841,7 @@ export function validate(profile: Profile): Issue[] {
   const stateDirs = new Map<string, string>();
   for (const t of s.tailnets) {
     const at: Where = { section: "tailscale", id: t.id, label: `Tailscale「${t.tag || "(未命名)"}」` };
-    if (!TAG_RE.test(t.tag)) err(at, "标签只能包含字母、数字、. _ -");
+    if (!TAG_RE.test(t.tag)) err(at, "标签不能为空，首尾不能有空格");
     addTag(t.tag);
     if (hasDns(t)) addTag(dnsTag(t));
     const { endpoint, error } = tailnetEndpoint(t);
@@ -861,7 +862,7 @@ export function validate(profile: Profile): Issue[] {
   const usable = usableGroups(profile.groups, new Set([...profile.nodes.map((n) => n.id), ...s.tailnets.map((t) => t.id)]));
   for (const g of profile.groups) {
     const at: Where = { section: "groups", id: g.id, label: `代理组「${g.tag || "(未命名)"}」` };
-    if (!TAG_RE.test(g.tag)) err(at, "名称只能包含字母、数字、. _ -");
+    if (!TAG_RE.test(g.tag)) err(at, "名称不能为空，首尾不能有空格");
     addTag(g.tag);
     if (!usable.has(g.id)) {
       warn(at, g.members.some((m) => m !== g.id && groupIds.has(m)) ? "成员里只有空的代理组，暂不写入配置" : "还没有成员，暂不写入配置");

@@ -7,6 +7,7 @@ import { fitImport, importConfig } from "../src/importer";
 import { blueprintProfile, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
 import { TEMPLATES } from "../src/templates";
 import type { Profile } from "../src/types";
+import { LINKS, b64 } from "./subscription-links";
 
 const DUMMY: Record<string, string> = {
   password: "dummy-pass",
@@ -130,6 +131,11 @@ export function sampleProfiles(): { name: string; profile: Profile }[] {
     // Everything the Clash importer maps, as it comes out of an import.
     const { nodes, groups } = fitImport(importConfig(readFileSync(new URL("./fixtures/clash-mihomo.yaml", import.meta.url), "utf8")));
     samples.push({ name: "clash-import", profile: { ...blueprintProfile(), nodes, groups } });
+  }
+  {
+    // Every kind of share link, as a base64 subscription delivers them.
+    const { nodes, groups } = fitImport(importConfig(b64(LINKS.join("\r\n"))));
+    samples.push({ name: "subscription-import", profile: { ...blueprintProfile(), nodes, groups } });
   }
   return samples;
 }

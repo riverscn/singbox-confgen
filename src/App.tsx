@@ -4,10 +4,12 @@ import { TEMPLATES } from "./templates";
 import { REMOTE_DNS, generateConfig, nodeObject, proxyChoices, parseDomainList, parseRuleList, tailnetEndpoint, validate, type DomainMatch, type Issue } from "./generate";
 import { defaultSettings, freshTag, newGroup, newNode, newRule, newTailnet, randomSecret } from "./defaults";
 import { clearStore, defaultStore, loadStore, newSavedProfile, saveStore, type Store } from "./storage";
-import { fitImport, importConfig as readImport, type ImportResult } from "./importer";
+import { fitImport, type ImportResult } from "./importer";
 import { useDialogs } from "./dialog";
 import { CodeEditor } from "./code-editor";
 import { useDragSort } from "./drag-sort";
+import { copyText } from "./clipboard";
+import { ImportDialog } from "./import-dialog";
 import { changedLines, linePaths, type LineRange } from "./diff";
 import {
   ArrowRight,
@@ -67,24 +69,6 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Clipboard API needs a secure context; self-hosted http:// pages land here.
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  }
-}
 
 function download(name: string, text: string) {
   const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
@@ -1412,12 +1396,12 @@ function StartPage(props: {
                 </Button>
                 <Button variant="ghost" size="sm" onClick={props.onImport}>
                   <FileUp />
-                  从配置文件新建
+                  从配置或订阅新建
                 </Button>
               </>
             }
           >
-            从协议模板添加，或者直接导入客户端里正在用的配置（sing-box 的 JSON 或 Clash 的 YAML）：节点、代理组和 Tailscale 带过来，DNS 和分流按这里的策略重写。
+            从协议模板添加，或者直接导入客户端里正在用的配置（sing-box 的 JSON 或 Clash 的 YAML）、机场的订阅内容：节点、代理组和 Tailscale 带过来，DNS 和分流按这里的策略重写。
             {!props.nodesReady && "现在还是示例节点。"}
           </Step>
           <Step
@@ -1677,7 +1661,6 @@ export default function App() {
   /** The node, group or tailnet last opened or edited; the preview follows it. */
   const [focusId, setFocusId] = useState<string | null>(null);
   const [wrap, setWrap] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const settingsPane = useRef<HTMLElement>(null);
   const active = store.profiles.find((p) => p.id === store.activeId) ?? store.profiles[0];
   const profile = active.profile;
@@ -1856,18 +1839,12 @@ export default function App() {
     setStore((s) => ({ activeId: saved.id, profiles: [...s.profiles, saved] }));
   };
 
-  const importConfig = async (file: File) => {
-    let result: ImportResult;
-    try {
-      result = readImport(await file.text());
-    } catch (e) {
-      await dialogs.alert("导入失败", (e as Error).message);
-      return;
-    }
+  const [importing, setImporting] = useState(false);
+  const importConfig = async (result: ImportResult, baseName: string, source: string) => {
     // Always a new profile of its own, never merged into one being edited: nothing there gets
     // renamed or doubled, and none of the template's examples come along.
     const { nodes, tailnets, groups, renamed } = fitImport(result);
-    const name = uniqueName(file.name.replace(/\.[^.]*$/, "") || "导入的配置", store);
+    const name = uniqueName(baseName, store);
     const content = (
       <ImportSummary
         rows={[
@@ -1879,7 +1856,7 @@ export default function App() {
       />
     );
     const ok = await dialogs.confirm(`新建配置「${name}」`, {
-      message: `从 ${file.name} 导入${["节点", ...(groups.length ? ["代理组"] : []), ...(tailnets.length ? ["Tailscale"] : [])].join("、").replace(/、([^、]+)$/, "和$1")}；DNS 和分流由本工具的策略生成，其他设置用默认值。当前配置「${active.name}」不受影响。`,
+      message: `${source}导入${["节点", ...(groups.length ? ["代理组"] : []), ...(tailnets.length ? ["Tailscale"] : [])].join("、").replace(/、([^、]+)$/, "和$1")}；DNS 和分流由本工具的策略生成，其他设置用默认值。当前配置「${active.name}」不受影响。`,
       content,
       confirmLabel: "新建",
     });
@@ -2035,8 +2012,8 @@ export default function App() {
           </DropdownMenuItem>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => fileInput.current?.click()}>
-          <FileUp />从 sing-box / Clash 配置新建…
+        <DropdownMenuItem onClick={() => setImporting(true)}>
+          <FileUp />从配置或订阅新建…
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem
@@ -2141,17 +2118,7 @@ export default function App() {
           </div>
         </div>
       </header>
-      <input
-        ref={fileInput}
-        type="file"
-        accept="application/json,.json,application/yaml,.yaml,.yml"
-        hidden
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) importConfig(f);
-          e.target.value = "";
-        }}
-      />
+      <ImportDialog open={importing} onOpenChange={setImporting} onImport={importConfig} />
 
       {/* Settings on the left; on wide screens the page itself doesn't scroll: the settings column
           scrolls on its own (so its scrollbar sits next to it, not beyond the preview) and the
@@ -2191,18 +2158,18 @@ export default function App() {
                   settingsPane.current?.scrollTo(0, 0);
                   window.scrollTo(0, 0);
                 }}
-                onImport={() => fileInput.current?.click()}
+                onImport={() => setImporting(true)}
                 onDownload={downloadConfig}
               />
             )}
 
             {tab === "nodes" && (
               <>
-                <Intro>每个节点是一段 sing-box 出站配置，可以按协议模板新加，也可以从现有的 sing-box 或 Clash 配置新建一套。拖动左侧手柄调整顺序，客户端里按此顺序显示。</Intro>
+                <Intro>每个节点是一段 sing-box 出站配置，可以按协议模板新加，也可以从现有的 sing-box、Clash 配置或订阅新建一套。拖动左侧手柄调整顺序，客户端里按此顺序显示。</Intro>
                 <ListHead title="节点" count={profile.nodes.length}>
-                  <Button variant="ghost" onClick={() => fileInput.current?.click()}>
+                  <Button variant="ghost" onClick={() => setImporting(true)}>
                     <FileUp />
-                    从配置文件新建
+                    从配置或订阅新建
                   </Button>
                   <AddNode usedTags={profile.nodes.map((n) => n.tag)} onAdd={addNode} />
                 </ListHead>

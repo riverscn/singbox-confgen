@@ -24,7 +24,7 @@
 
 ## 三步上手
 
-1. **填节点**：从协议模板添加，或者导入客户端里正在用的配置：sing-box 的 `config.json`（节点和 Tailscale），或 Clash（mihomo）的 YAML（节点和代理组）。DNS 和分流按这里的策略重写。
+1. **填节点**：从协议模板添加，或者导入客户端里正在用的配置：sing-box 的 `config.json`（节点和 Tailscale），或 Clash（mihomo）的 YAML（节点和代理组）；也可以导入机场订阅的内容（Clash YAML、明文或 base64 的分享链接、SIP008）。DNS 和分流按这里的策略重写。
 2. **选默认模式**：GFWList、Non-CN、Global、Direct 四种都会写进配置，在客户端里随时切换。被墙但不在 gfwlist 里的网站，加进自定义代理域名。
 3. **下载 `config.json`**：导入 SFM、SFI、SFA，或运行 `sing-box run -c config.json`。需要 sing-box **1.14** 及以上。
 
@@ -34,6 +34,7 @@
 
 - 没有后端。页面的 CSP 禁止发出任何网络请求，设置只保存在当前浏览器的 localStorage 里，可以保存多套配置。
 - 下载的 `config.json` 本身也能再导入回来。
+- 导入订阅时页面同样不联网：填上订阅地址，页面给出 `curl` 命令和打开链接，由你自己取回内容再粘贴或选择文件。订阅地址不会保存，导入是一次性的，节点更新后需要重新导入。
 - 分流策略是固定的一套；需要深度定制时，直接修改生成的 JSON，或者交给 AI 助手（见下一节）。
 
 ## 用 AI 助手修改配置
@@ -139,6 +140,8 @@ git push --follow-tags
 - `src/legacy.ts`：把旧版（表单）保存的服务器迁移为 JSON 节点。
 - `src/importer.ts`：从现有 sing-box 配置导入节点和 Tailscale。
 - `src/clash.ts`：从 Clash（mihomo）配置导入节点和代理组。
+- `src/subscription.ts`：识别订阅内容（分享链接、base64、SIP008），把分享链接读成 Clash 的代理字段，再交给 `src/clash.ts` 转换；解析规则参照 mihomo 和 Sub-Store。
+- `src/import-dialog.tsx`：导入对话框（文件、粘贴、订阅地址的取回方式）。
 - `src/App.tsx`：界面；`src/storage.ts`：本地保存和导入时的兼容处理。
 - `test/generate.test.ts`：
   - 用一份“个人配置”还原蓝本（`test/fixtures/tiger-baseline.json`，已匿名化）的非 DNS 部分；
@@ -148,5 +151,6 @@ git push --follow-tags
 - `test/samples.ts`：覆盖全部节点模板和功能、平台组合的示例配置，供 schema 测试和 `sing-box check` 共用。
 - `test/schema.test.ts`：用 sing-box 1.14.3 官方 JSON schema（`test/fixtures/sing-box-1.14.3.schema.json`）校验所有示例配置。
 - `test/storage.test.ts`：多套配置的存储和旧数据迁移。
+- `test/subscription.test.ts`：各协议分享链接、SIP008 和 base64 订阅的导入，以及生成的配置符合 schema。
 - `skills/sing-box-best-practice/`：给 AI 编程助手用的 skill，说明如何修改生成的配置。
 - `scripts/`：下载并校验官方 sing-box（`fetch-sing-box.py`），对示例配置跑 `sing-box check`（`singbox-check.ts`）。

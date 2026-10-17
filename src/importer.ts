@@ -4,6 +4,7 @@
 
 import { importClashConfig, isClashConfig } from "./clash";
 import { parseJsonc } from "./generate";
+import { decodeBase64, importShareLinks, importSip008, isSip008, shareLinks } from "./subscription";
 import { newGroup, newNode, newTailnet } from "./defaults";
 import { ENDPOINT_TYPES, NODE_TYPES } from "./templates";
 import type { ProxyGroup, ProxyNode, Tailnet } from "./types";
@@ -105,8 +106,18 @@ function nodeBody(o: Json, keptResolvers: Set<string>): Json {
   return body;
 }
 
-/** A sing-box config (JSON) or a Clash one (YAML, or the same as JSON), told apart by content. */
+/**
+ * A sing-box config (JSON), a Clash one (YAML, or the same as JSON) or what a subscription URL
+ * returns (also share links, plain or in base64, and SIP008 JSON), told apart by content.
+ */
 export function importConfig(text: string): ImportResult {
+  text = text.replace(/^\uFEFF/, "");
+  if (/^\s*</.test(text)) throw new Error("这是一个网页，不是配置或订阅内容。订阅地址在浏览器里打开时，有的面板会返回网页：试试 curl 命令，或在地址后加上 &flag=meta");
+  const links = shareLinks(text);
+  if (links) return importShareLinks(links);
+  // A whole config in base64, as a few panels send it.
+  const decoded = /^[\sA-Za-z0-9+/=_-]+$/.test(text) && !/^\s*\w+\s*:/.test(text) ? decodeBase64(text) : null;
+  if (decoded && /^\s*[{/]|^\s*[\w-]+\s*:/m.test(decoded)) return importConfig(decoded);
   if (!/^\s*[{/]/.test(text)) return importClashConfig(text);
   let parsed: unknown;
   try {
@@ -115,7 +126,8 @@ export function importConfig(text: string): ImportResult {
     // Not JSON after all: let the sing-box importer say why.
     return importSingBoxConfig(text);
   }
-  return isClashConfig(parsed) ? importClashConfig(parsed) : importSingBoxConfig(text);
+  if (isClashConfig(parsed)) return importClashConfig(parsed);
+  return isSip008(parsed) ? importSip008(parsed) : importSingBoxConfig(text);
 }
 
 export function importSingBoxConfig(text: string): ImportResult {

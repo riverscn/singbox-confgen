@@ -60,7 +60,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 ### DNS 规则顺序（`dns.rules`）
 
 1. Tailscale：分域 DNS 域名 → `<tailnet>-dns`；MagicDNS（`preferred_by`）→ `<tailnet>-dns`。
-2. （有 DNS 分流时）`custom-dns-domains` 里的域名（局域网域名除外，它们所有记录照常返回）：会走代理的（代理域名、规则域名，或不确定直连的）IPv6 类查询返回空；确定直连且本机没有公网 IPv6 时 `AAAA` 返回空；然后按 DNS 规则顺序 → 各自的服务器（`local`、`remote` 或 `dns-rule-<序号>`）。排在局域网规则之前，所以可以把 `.lan` 和设备名（`domain_regex: ^[^.]+$`）交给路由器。
+2. （有 DNS 分流时）`custom-dns-domains` 里的域名（局域网域名除外，它们所有记录照常返回）：会走代理的（代理域名、规则域名，或不确定直连的）IPv6 类查询返回空；确定直连且本机没有公网 IPv6 时 `AAAA` 返回空；然后按 DNS 规则顺序 → 各自的服务器（`local`、`remote` 或 `dns-rule-<序号>`）。排在局域网规则之前。
 2b. `preferred_by: local`、本地域名 → `local`。
 3. （有代理域名或规则时）代理域名、规则域名：IPv6 类查询返回空；其余 → `remote`。条件都带“不是 Direct 模式、不在直连列表”。
 4. 直连流量：本机没有公网 IPv6 时 `AAAA` 返回空；其余 → `local`。“直连流量”由一个 `or` 判断，覆盖 Direct 模式、直连列表、GFWList 模式下不在 gfwlist 的、Non-CN 模式下在 `geosite-geolocation-cn` 的。
@@ -112,7 +112,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 
 **把某些域名交给指定节点**：在路由规则第 6 步的位置加一条规则；域名同时放进 `custom-rule-domains`，并确保 DNS 第 3 步引用了它（按走代理解析：只给 IPv4，问 `remote`）。远程 DNS 仍然经 `proxy`，不经这个节点。规则里有 IP 时，也放进 `custom-rule-ips`，并在 IPv6 拒绝规则里排除。
 
-**让某些域名用指定的 DNS 解析**：网页的“DNS 分流”可以做。手改时在 DNS 第 2 步的位置加 `domain…` → 服务器的 `route` 规则，域名同时放进 `custom-dns-domains`，保证它前面的三条 IPv6 规则覆盖到；自定义服务器加进 `dns.servers`，直连访问时不写 `detour`（不能写 `direct`）。这只改解析者，流量走向仍由路由规则决定。
+**让某些域名用指定的 DNS 解析**（典型：经 WireGuard、OpenConnect 等非 Tailscale 的 VPN 节点访问公司域名，要问内网 DNS，`detour` 填该节点）：网页的“DNS 分流”可以做。tailnet 的内网域名不要用它，用 tailnet 的分域 DNS（DNS 第 1 步）。手改时在 DNS 第 2 步的位置加 `domain…` → 服务器的 `route` 规则，域名同时放进 `custom-dns-domains`，保证它前面的三条 IPv6 规则覆盖到；自定义服务器加进 `dns.servers`，直连访问时不写 `detour`（不能写 `direct`）。这只改解析者，流量走向仍由路由规则决定。
 
 **加节点**：放进 `outbounds`（WireGuard、OpenConnect、OpenVPN 是端点，放进 `endpoints`）；没写 `domain_resolver` 时加上 `"domain_resolver": "local"`（节点服务器是直连访问的）；要参与自动测速就加进 `auto` 的 `outbounds`。
 

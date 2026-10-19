@@ -75,7 +75,7 @@ npx skills add riverscn/singbox-confgen --skill sing-box-best-practice -g -a cla
 |---|---|
 | 节点 | 用 JSON 编写（可写注释），从协议模板开始：Hysteria2、VLESS（Vision / Reality）、VMess、Trojan、Shadowsocks、ShadowTLS、TUIC、AnyTLS、Hysteria、NaiveProxy、Snell、SOCKS、HTTP、SSH、Tor，以及 WireGuard、OpenConnect、OpenVPN 端点 |
 | 代理组 | 按地区、用途给节点分组：手动选择或自动测速，可嵌套；成员可按名称筛选后一次选中；`proxy` 的默认选择；节点多时可不在 `proxy` 里逐个列出 |
-| 分流 | 默认模式；直连域名；代理域名和 IP（适合被墙但不在 gfwlist 里的网站）；DNS 分流（指定域名用本地 DNS、代理 DNS 或自定义的 DNS 服务器解析，例如局域网域名交给路由器 192.168.1.1） |
+| 分流 | 默认模式；直连域名；代理域名和 IP（适合被墙但不在 gfwlist 里的网站）；DNS 分流（指定域名用本地 DNS、代理 DNS 或自定义的 DNS 服务器解析，例如经 WireGuard、OpenConnect 连公司时，公司域名问内网 DNS；tailnet 的内网域名用 Tailscale 卡片里的分域 DNS） |
 | Tailscale | 任意多个 tailnet：端点用 JSON 编写（可写注释）；MagicDNS、tailnet 默认 DNS、分域 DNS、额外路由、作为代理出口 |
 | 高级 | 目标平台；代理 DNS 服务器（Google / Cloudflare / Quad9，DoT 或 DoH，或用 JSON 自定义任意 DNS 服务器）；ECS；Clash API；Steam、禁止 iCloud 使用 QUIC |
 

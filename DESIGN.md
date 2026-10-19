@@ -19,9 +19,12 @@
 
 规则：每条规则是一组域名/IP 加一个出口（任一节点或代理组），生成为一条 `route` 规则，指向该出口。除 Direct 外始终生效，位置在自定义直连之后、自定义代理之前，多条规则按列表顺序第一条匹配的生效。规则里的域名另放进 `custom-rule-domains`（只给 DNS 用），DNS 上和代理域名一样处理（远程解析、只给 A）；远程 DNS 仍经 `proxy` 访问，不经规则自己的出口。出口未选、已删除或是空代理组，或者没有有效条目时，这条规则不写入配置，并给出提醒。
 
-DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DNS、代理 DNS，或用 JSON 自定义任意 sing-box DNS 服务器），匹配的域名交给它解析。典型用法：局域网域名（`.`、`lan`、`home.arpa`）交给路由器 192.168.1.1，其余照旧；也可以让公司域名用内网 DNS、某些域名指定 DoH。
+DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DNS、代理 DNS，或用 JSON 自定义任意 sing-box DNS 服务器），匹配的域名交给它解析。
+- 要补的空白是不经 Tailscale 的 VPN：用「规则」把公司域名送进 WireGuard、OpenConnect、OpenVPN 节点后，这些域名默认按走代理处理，经 `proxy` 问远程 DNS，拿不到内网地址。DNS 规则让它们去问内网 DNS，`detour` 填该 VPN 节点。
+- 和 Tailscale 的分工：tailnet 里的内网域名用 tailnet 的「分域 DNS」（第 4 节），它用 tailnet 自己的 DNS 设置（MagicDNS、tailnet 下发的 DNS），排在 DNS 规则前面。自定义服务器的 `detour` 指向 tailnet 时给出提醒，建议改用分域 DNS。
+- 局域网域名通常不需要它：系统 DNS 一般就是路由器，设备名和 `.lan` 原本就交给本地 DNS；只有网络下发的 DNS 不是路由器时，才需要用它把局域网域名指给路由器。
 - 只改“由谁解析”，不改流量走向：路由仍按模式和上面的列表决定。在所有模式下生效（包括 Direct）。
-- 位置在 tailnet 分域 DNS 和 MagicDNS 之后，其他 DNS 规则之前，包括局域网域名默认交给本地 DNS 的两条（`preferred_by: local`、本地域名），所以能把局域网域名改交给路由器。多条规则按列表顺序第一条匹配的生效。
+- 位置在 tailnet 分域 DNS 和 MagicDNS 之后，其他 DNS 规则之前，包括局域网域名默认交给本地 DNS 的两条（`preferred_by: local`、本地域名），所以需要时也能把局域网域名改交给路由器。多条规则按列表顺序第一条匹配的生效。
 - 局域网域名（本地域名后缀和不带点的设备名）不套用下面的 IPv6 策略：和交给本地 DNS 时一样，所有记录照常返回。
 - 列表里单独一个 `.` 表示不带点的设备名（如 `nas`），和 `local` 服务器 `neighbor_domain` 里的 `.` 同义，生成为 `domain_regex: ^[^.]+$`。所有列表都认这个写法。
 - IPv6 策略不变：域名会走代理（代理域名、规则域名，或不能确定直连的，例如 Non-CN 模式下不在国内列表里的）时 AAAA、HTTPS、SVCB 返回空；确定直连时照常，本机没有公网 IPv6 时 AAAA 返回空。为此所有 DNS 规则的域名另放进 `custom-dns-domains`（只给 DNS 用）。

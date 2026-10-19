@@ -427,6 +427,18 @@ describe("DNS rules", () => {
     expect(ask({ mode: "GFWList", gfw: true, customDirect: true }, "AAAA")).toBe("route:dns-rule-1");
   });
 
+  it("starts from a template for an internal DNS behind a VPN node, and points tailnets to their split DNS", () => {
+    const p = withDnsRules({ lines: ["corp.example.com"] });
+    p.nodes.push(newNode({ tag: "wg", body: filledBody("wireguard") }));
+    expect(validate(p).filter((i) => i.id === p.settings.dnsRules[0].id)).toEqual([]);
+    expect(gen(p).dns.servers.find((s: any) => s.tag === "dns-rule-1")).toEqual({ type: "udp", tag: "dns-rule-1", server: "10.0.0.53" });
+    p.settings.dnsRules[0].custom = '{"type":"udp","server":"10.0.0.53","detour":"wg"}';
+    expect(validate(p).filter((i) => i.id === p.settings.dnsRules[0].id)).toEqual([]);
+    p.settings.tailnets = [newTailnet({ tag: "office" })];
+    p.settings.dnsRules[0].custom = '{"type":"udp","server":"10.0.0.53","detour":"office"}';
+    expect(validate(p).find((i) => i.id === p.settings.dnsRules[0].id)).toMatchObject({ level: "warning", detail: expect.stringContaining("分域 DNS") });
+  });
+
   it("leaves out rules without domains or with a broken server, and says why", () => {
     const p = withDnsRules(
       { lines: [] },

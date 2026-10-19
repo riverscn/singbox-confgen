@@ -1125,13 +1125,13 @@ function DnsRuleCard(props: {
         <FormField
           hintAbove
           label="自定义 DNS 服务器"
-          hint={`sing-box DNS 服务器 JSON，可写注释；tag 由生成器填写（${dnsRuleTag(props.index)}），不写 detour 时直连访问`}
+          hint={`sing-box DNS 服务器 JSON，可写注释；tag 由生成器填写（${dnsRuleTag(props.index)}）。经 VPN 节点访问时 detour 填它的标签，不写就直连访问`}
         >
           {(id) => <CodeEditor labelledBy={`${id}-label`} value={r.custom} onChange={(custom) => set({ custom })} minLines={4} maxLines={14} />}
         </FormField>
       )}
       <FormField label="域名">
-        {(id) => <ListEditor id={id} lines={r.lines} onChange={(lines) => set({ lines })} placeholder={".  # 不带点的设备名，如 nas\nlan\nhome.arpa"} />}
+        {(id) => <ListEditor id={id} lines={r.lines} onChange={(lines) => set({ lines })} placeholder={"corp.example.com\nintranet.example.net"} />}
       </FormField>
     </ItemCard>
   );
@@ -2378,7 +2378,7 @@ export default function App() {
                   </Button>
                 </ListHead>
                 <Intro>
-                  让匹配的域名用指定的 DNS 服务器解析，例如局域网域名（nas、nas.lan）交给路由器 192.168.1.1，其余照旧。只改由谁解析，流量仍按上面的分流走；走代理的域名照样只给 IPv4。在所有模式下生效，排在 tailnet 分域 DNS 之后、其他 DNS 规则（包括局域网域名默认用本地 DNS）之前；多条规则从上到下第一条匹配的生效。
+                  让匹配的域名用指定的 DNS 服务器解析。主要用于不经 Tailscale 的 VPN：例如用「规则」把公司域名送进 WireGuard 或 OpenConnect 节点后，这些域名还要问公司内网的 DNS（detour 填该节点）才拿得到内网地址，否则会去问代理 DNS。tailnet 里的内网域名不用在这里写，用 Tailscale 页的「分域 DNS」。只改由谁解析，流量仍按上面的分流走；走代理的域名照样只给 IPv4。在所有模式下生效，排在 tailnet 分域 DNS 之后、其他 DNS 规则之前；多条规则从上到下第一条匹配的生效。
                 </Intro>
                 {profile.settings.dnsRules.length === 0 && <Empty>还没有 DNS 规则。</Empty>}
                 {profile.settings.dnsRules.map((r, i) => (

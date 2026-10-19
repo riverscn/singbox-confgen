@@ -78,12 +78,14 @@ export function newRule(partial: Partial<RouteRule> = {}): RouteRule {
 }
 
 export const DNS_RULE_TEMPLATE = `{
-  // 任意 sing-box DNS 服务器：tcp / udp / tls / https / quic / h3
-  // 默认直连访问；要经代理访问，加上 "detour": "proxy"
-  // 详见 https://sing-box.sagernet.org/zh/configuration/dns/server/
-  // 例如家里路由器的 DNS，才认得局域网里的设备名
+  // 内网 DNS 服务器，例如经 WireGuard、OpenConnect、OpenVPN 连到的公司内网
+  // tailnet 里的域名不用写在这里，用 Tailscale 页的「分域 DNS」
+  // 经哪个节点访问：填 VPN 节点的标签；不写就直连访问
+  // "detour": "wg",
   "type": "udp",
-  "server": "192.168.1.1"
+  "server": "10.0.0.53"
+  // 可以是任意 sing-box DNS 服务器：tcp / udp / tls / https / quic / h3
+  // 详见 https://sing-box.sagernet.org/zh/configuration/dns/server/
 }`;
 
 export function newDnsRule(partial: Partial<DnsRule> = {}): DnsRule {

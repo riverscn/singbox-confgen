@@ -945,6 +945,7 @@ export function validate(profile: Profile): Issue[] {
     if (error) err(at, `DNS 服务器：${error}（暂不写入配置）`);
     else if (server!.detour === "direct") err(at, "detour 不能是 direct：不写 detour 就是直连访问");
     else if (typeof server!.detour === "string" && !outboundTags.has(server!.detour)) err(at, `detour 指向的「${server!.detour}」不存在`);
+    else if (tailnetTags.has(String(server!.detour))) warn(at, `经 tailnet「${server!.detour}」的内网域名，用 Tailscale 页的「分域 DNS」更合适：它用 tailnet 自己的 DNS 设置`);
   });
   // Groups containing each other (directly or through other groups) would never resolve.
   const inCycle = new Set<string>();

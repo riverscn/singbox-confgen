@@ -1,4 +1,4 @@
-import type { Profile, ProxyGroup, ProxyNode, RouteRule, Settings, Tailnet } from "./types";
+import type { DnsRule, Profile, ProxyGroup, ProxyNode, RouteRule, Settings, Tailnet } from "./types";
 import { TEMPLATES } from "./templates";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -39,6 +39,7 @@ export const defaultSettings = (): Settings => ({
   directDomains: [],
   proxyRules: [],
   rules: [],
+  dnsRules: [],
   tailnets: [],
   proxyDefault: "auto",
   listNodesInProxy: true,
@@ -74,6 +75,18 @@ export function newTailnet(partial: Partial<Tailnet> = {}): Tailnet {
 
 export function newRule(partial: Partial<RouteRule> = {}): RouteRule {
   return { id: uid(), outbound: "", lines: [], ...partial };
+}
+
+export const DNS_RULE_TEMPLATE = `{
+  // 任意 sing-box DNS 服务器：tcp / udp / tls / https / quic / h3
+  // 默认直连访问；要经代理访问，加上 "detour": "proxy"
+  // 详见 https://sing-box.sagernet.org/zh/configuration/dns/server/
+  "type": "udp",
+  "server": "192.168.1.1"
+}`;
+
+export function newDnsRule(partial: Partial<DnsRule> = {}): DnsRule {
+  return { id: uid(), server: "custom", custom: DNS_RULE_TEMPLATE, lines: [], ...partial };
 }
 
 export function newGroup(partial: Partial<ProxyGroup> = {}): ProxyGroup {

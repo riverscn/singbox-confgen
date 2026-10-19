@@ -19,6 +19,12 @@
 
 规则：每条规则是一组域名/IP 加一个出口（任一节点或代理组），生成为一条 `route` 规则，指向该出口。除 Direct 外始终生效，位置在自定义直连之后、自定义代理之前，多条规则按列表顺序第一条匹配的生效。规则里的域名另放进 `custom-rule-domains`（只给 DNS 用），DNS 上和代理域名一样处理（远程解析、只给 A）；远程 DNS 仍经 `proxy` 访问，不经规则自己的出口。出口未选、已删除或是空代理组，或者没有有效条目时，这条规则不写入配置，并给出提醒。
 
+DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DNS、代理 DNS，或用 JSON 自定义任意 sing-box DNS 服务器），匹配的域名交给它解析，例如公司域名用内网 DNS、某些域名指定 DoH。
+- 只改“由谁解析”，不改流量走向：路由仍按模式和上面的列表决定。在所有模式下生效（包括 Direct）。
+- 位置在 tailnet 分域 DNS、MagicDNS 和局域网域名之后，其他 DNS 规则之前；多条规则按列表顺序第一条匹配的生效。
+- IPv6 策略不变：域名会走代理（代理域名、规则域名，或不能确定直连的，例如 Non-CN 模式下不在国内列表里的）时 AAAA、HTTPS、SVCB 返回空；确定直连时照常，本机没有公网 IPv6 时 AAAA 返回空。为此所有 DNS 规则的域名另放进 `custom-dns-domains`（只给 DNS 用）。
+- 自定义服务器的标签是 `dns-rule-<序号>`；没写 `detour` 时直连访问（要经代理就写 `"detour": "proxy"`）。`detour` 不能写 `direct`（sing-box 拒绝指向空 direct 出站的 detour），指向不存在的出站也报错。JSON 有误或没有有效域名的规则不写入配置，并给出提醒。
+
 所有域名列表（直连、代理、tailnet 的分域 DNS 和额外路由）的写法与 sing-box 一致，不另设语法：每行一项，不加前缀时按 `domain_suffix` 匹配（`example.com` 同时匹配子域名，`.example.com` 只匹配子域名），IP 和网段按 `ip_cidr`；也可以用字段名作前缀，写成 `domain:`、`domain_suffix:`、`domain_keyword:`、`domain_regex:`、`ip_cidr:`。正则按 Go RE2 校验（不支持环视和反向引用）；sing-box 拿小写后的域名去匹配正则，所以正则里出现大写字母会被判为错误（除非写了 `(?i)`）。`domain_regex:` 行里的逗号和 `#` 属于正则本身，注释要用空格隔开的 ` #`。
 
 ## 2. DNS 策略
@@ -86,7 +92,7 @@
 ## 5. 可分享性的取舍
 
 - 核心策略只保留一套，不开放逐条编辑。规则之间相互依赖（race 规则的顺序、`speculative` 的位置等），随手改一条可能悄悄出错；需要深度定制的用户直接修改生成的 JSON。
-- 唯一开放的策略选项：走代理时使用的 DNS 服务器。除了三家预设，还可以选“自定义”，用一段 JSON 写任意 sing-box DNS 服务器（tcp/udp/tls/https/quic/h3），生成器填写 `tag: remote`，没写 `detour` 时补上 `proxy`。JSON 有误时报错，并暂时改用 Google，保证配置仍能加载。
+- 开放的策略选项：走代理时使用的 DNS 服务器；以及按域名指定 DNS 服务器的 DNS 分流（见第 1 节），它只改解析者，IPv6 策略照旧。除了三家预设，还可以选“自定义”，用一段 JSON 写任意 sing-box DNS 服务器（tcp/udp/tls/https/quic/h3），生成器填写 `tag: remote`，没写 `detour` 时补上 `proxy`。JSON 有误时报错，并暂时改用 Google，保证配置仍能加载。
 - 导入：直接读现有的 sing-box 或 Clash 配置（不再有本工具自己的导入导出格式）。sing-box 配置只取节点（代理类出站和 WireGuard/OpenConnect/OpenVPN 端点）和 Tailscale（端点，及其 DNS 服务器的 MagicDNS、默认 DNS、分域 DNS，额外路由，是否在代理组里）。DNS 和分流规则由本工具的策略生成。
   - 节点引用的 `domain_resolver` 如果在新配置里不存在（例如 `cn-dns`），会去掉并说明。
   - 源配置有代理组时，不在任何组里的节点（例如 ShadowTLS 这种 detour 辅助节点）导入后也不加入代理组。

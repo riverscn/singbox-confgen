@@ -41,6 +41,18 @@ export interface RouteRule {
   lines: string[];
 }
 
+export type DnsRuleServer = "local" | "remote" | "custom";
+
+export interface DnsRule {
+  id: string;
+  /** local: the network's resolver; remote: the proxy DNS; custom: the JSON below. */
+  server: DnsRuleServer;
+  /** DNS server body as JSON with comments, used when server is "custom". */
+  custom: string;
+  /** Lines as entered: domains resolved by this server. */
+  lines: string[];
+}
+
 export interface Settings {
   platform: Platform;
   defaultMode: "GFWList" | "Non-CN" | "Global" | "Direct";
@@ -61,6 +73,8 @@ export interface Settings {
   proxyRules: string[];
   /** Traffic sent to a chosen node or group, checked in order after the direct list. */
   rules: RouteRule[];
+  /** Domains resolved by a chosen DNS server, checked in order before the other DNS rules. */
+  dnsRules: DnsRule[];
   tailnets: Tailnet[];
   /** What `proxy` picks by default: "auto" or a group id. */
   proxyDefault: string;

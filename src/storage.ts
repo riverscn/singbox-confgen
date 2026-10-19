@@ -1,6 +1,6 @@
-import type { Profile, ProxyGroup, ProxyNode, RouteRule, Tailnet } from "./types";
+import type { DnsRule, Profile, ProxyGroup, ProxyNode, RouteRule, Tailnet } from "./types";
 import { legacyServersToNodes, type LegacyServer } from "./legacy";
-import { blueprintProfile, defaultSettings, newGroup, newNode, newRule, newTailnet } from "./defaults";
+import { blueprintProfile, defaultSettings, newDnsRule, newGroup, newNode, newRule, newTailnet } from "./defaults";
 
 const KEY = "singbox-gen:profile";
 
@@ -33,6 +33,7 @@ function normalizeSettings(raw: Record<string, unknown>): Profile["settings"] {
     remoteDns: { ...base.remoteDns, ...((raw.remoteDns as object) ?? {}) },
     tailnets: tailnets.map((t) => newTailnet(t)),
     rules: Array.isArray(raw.rules) ? (raw.rules as Partial<RouteRule>[]).map((r) => newRule(r)) : [],
+    dnsRules: Array.isArray(raw.dnsRules) ? (raw.dnsRules as Partial<DnsRule>[]).map((r) => newDnsRule(r)) : [],
   } as Profile["settings"];
 }
 

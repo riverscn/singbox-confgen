@@ -35,7 +35,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 出自生成器的配置有这些特征：
 
 - `outbounds` 第一项是 `selector`，标签 `proxy`；第二项是 `urltest`，标签 `auto`；最后是 `direct`。
-- `dns.servers` 有 `local`（`type: local`）和 `remote`（经 `detour: proxy`），可能还有 `<tailnet>-dns`。
+- `dns.servers` 有 `local`（`type: local`）和 `remote`（经 `detour: proxy`），可能还有 `<tailnet>-dns` 和 DNS 分流用的 `dns-rule-<序号>`。
 - `route.rule_set` 里有 `geoip-cn`、`geosite-geolocation-cn`、`gfwlist`、`telegram-ip`、`gfwlist-custom-domains`、`gfwlist-custom-ips`、`custom-direct-domains`。
 - 规则里大量使用 `clash_mode`，模式名是 `Direct`、`GFWList`、`Non-CN`、`Global`。
 - `http_clients` 有 `rule-set-download`（`detour: proxy`）。
@@ -61,6 +61,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 
 1. Tailscale：分域 DNS 域名 → `<tailnet>-dns`；MagicDNS（`preferred_by`）→ `<tailnet>-dns`。
 2. `preferred_by: local`、本地域名 → `local`。
+2a. （有 DNS 分流时）`custom-dns-domains` 里的域名：会走代理的（代理域名、规则域名，或不确定直连的）IPv6 类查询返回空；确定直连且本机没有公网 IPv6 时 `AAAA` 返回空；然后按 DNS 规则顺序 → 各自的服务器（`local`、`remote` 或 `dns-rule-<序号>`）。
 3. （有代理域名或规则时）代理域名、规则域名：IPv6 类查询返回空；其余 → `remote`。条件都带“不是 Direct 模式、不在直连列表”。
 4. 直连流量：本机没有公网 IPv6 时 `AAAA` 返回空；其余 → `local`。“直连流量”由一个 `or` 判断，覆盖 Direct 模式、直连列表、GFWList 模式下不在 gfwlist 的、Non-CN 模式下在 `geosite-geolocation-cn` 的。
 5. Non-CN 模式下的其余域名：`evaluate` 问 `local`（`local-answer`，超时 500ms）；返回内网 IP 或国内 IP 时 `respond`（`race: true`），没有公网 IPv6 时国内 `AAAA` 返回空。
@@ -94,6 +95,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 | `custom-direct-domains`、`custom-direct-ips` | 内联 | 自定义直连 |
 | `custom-rule-domains` | 内联 | 只给 DNS 用：规则里的域名，按走代理解析 |
 | `custom-rule-ips` | 内联 | 只给 IPv6 拒绝规则用：规则里的 IP，放行 |
+| `custom-dns-domains` | 内联 | 只给 DNS 用：DNS 分流里的所有域名，套用 IPv6 策略 |
 
 内联规则集为空时写成永不匹配的 `{"domain_regex": ["a^"]}`。
 
@@ -109,6 +111,8 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 **加一个“始终直连”的域名**：写进 `custom-direct-domains`。DNS 和路由规则已经引用它，不用改规则。
 
 **把某些域名交给指定节点**：在路由规则第 6 步的位置加一条规则；域名同时放进 `custom-rule-domains`，并确保 DNS 第 3 步引用了它（按走代理解析：只给 IPv4，问 `remote`）。远程 DNS 仍然经 `proxy`，不经这个节点。规则里有 IP 时，也放进 `custom-rule-ips`，并在 IPv6 拒绝规则里排除。
+
+**让某些域名用指定的 DNS 解析**：网页的“DNS 分流”可以做。手改时在 DNS 第 2a 步的位置加 `domain…` → 服务器的 `route` 规则，域名同时放进 `custom-dns-domains`，保证它前面的三条 IPv6 规则覆盖到；自定义服务器加进 `dns.servers`，直连访问时不写 `detour`（不能写 `direct`）。这只改解析者，流量走向仍由路由规则决定。
 
 **加节点**：放进 `outbounds`（WireGuard、OpenConnect、OpenVPN 是端点，放进 `endpoints`）；没写 `domain_resolver` 时加上 `"domain_resolver": "local"`（节点服务器是直连访问的）；要参与自动测速就加进 `auto` 的 `outbounds`。
 

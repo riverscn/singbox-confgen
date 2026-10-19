@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { parseJsonc } from "../src/generate";
 import { fitImport, importConfig } from "../src/importer";
-import { blueprintProfile, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
+import { blueprintProfile, newDnsRule, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
 import { TEMPLATES } from "../src/templates";
 import type { Profile } from "../src/types";
 import { LINKS, b64 } from "./subscription-links";
@@ -72,6 +72,15 @@ function fullProfile(): Profile {
   p.settings.rules = [
     newRule({ outbound: fast.id, lines: ["openai.com", "domain_keyword:claude", "192.0.2.0/24"] }),
     newRule({ outbound: c.id, lines: ["domain:api.example.net"] }),
+  ];
+  p.settings.dnsRules = [
+    newDnsRule({ lines: ["corp.example.org", "domain_keyword:intra"] }),
+    newDnsRule({ server: "remote", lines: ["domain:api.example.org"] }),
+    newDnsRule({ server: "local", lines: [".lan.example"] }),
+    newDnsRule({
+      custom: '{"type":"https","server":"1.1.1.1","path":"/dns-query","tls":{"enabled":true,"server_name":"cloudflare-dns.com"},"detour":"proxy"}',
+      lines: ["domain_regex:^cdn\\d+\\.example\\.com$"],
+    }),
   ];
   return p;
 }

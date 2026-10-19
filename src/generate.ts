@@ -1,4 +1,4 @@
-import type { Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RemoteDnsProvider, RouteRule, Settings, Tailnet } from "./types";
+import type { DnsRule, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RemoteDnsProvider, RouteRule, Settings, Tailnet } from "./types";
 import { ENDPOINT_TYPES, NEEDS_SERVER, NODE_TYPES, SECRET_FIELDS } from "./templates";
 
 type Json = Record<string, unknown>;
@@ -14,6 +14,7 @@ const CUSTOM_DIRECT = "custom-direct-domains";
 const CUSTOM_DIRECT_IPS = "custom-direct-ips";
 const RULE_DOMAINS = "custom-rule-domains";
 const RULE_IPS = "custom-rule-ips";
+const DNS_RULE_DOMAINS = "custom-dns-domains";
 const PUBLIC_V6 = ["2000::/3"];
 const IPV6_CARRIERS = ["AAAA", "HTTPS", "SVCB"];
 const LOCAL_DOMAINS = {
@@ -291,6 +292,27 @@ function builtRules(s: Settings, tags: Map<string, string>): BuiltRule[] {
   });
 }
 
+/** The DNS server tag a DNS rule with its own server gets. */
+export const dnsRuleTag = (index: number) => `dns-rule-${index + 1}`;
+
+/** A DNS rule that makes it into the config: its server tag, the server to add (custom only) and its domains. */
+interface BuiltDnsRule {
+  tag: string;
+  server?: Json;
+  domains: DomainMatch;
+}
+
+/** DNS rules with at least one valid domain and a usable server; the rest are left out (validate says why). */
+function builtDnsRules(s: Settings): BuiltDnsRule[] {
+  return s.dnsRules.flatMap((r, i): BuiltDnsRule[] => {
+    const { domains } = parseDomainList(r.lines.join("\n"));
+    if (!matchCount(domains)) return [];
+    if (r.server !== "custom") return [{ tag: r.server, domains }];
+    const { server } = customDnsServer(r.custom, dnsRuleTag(i), null);
+    return server ? [{ tag: dnsRuleTag(i), server, domains }] : [];
+  });
+}
+
 /** Rule-sets of domains always sent through a proxy (the proxy list, the rules), for DNS. */
 function proxiedSets(s: Settings, rules: BuiltRule[]): string[] {
   return [
@@ -338,7 +360,7 @@ const proxiedByDomain = (proxied: string[]): Json =>
  *   Connections an app makes to IPv6 on its own are not blocked; they are routed by sniffed domain.
  * - Without a public IPv6 address locally, AAAA for direct traffic is empty.
  */
-function dnsRules(s: Settings, rules: BuiltRule[]): Json[] {
+function dnsRules(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): Json[] {
   const ecs = s.clientSubnet.trim() ? { client_subnet: s.clientSubnet.trim() } : {};
   const proxied = proxiedSets(s, rules);
   const direct = directByDomain(s, proxied);
@@ -355,11 +377,27 @@ function dnsRules(s: Settings, rules: BuiltRule[]): Json[] {
         { ...proxiedByDomain(proxied), action: "route", server: "remote" },
       ]
     : [];
+  // Domains with a chosen DNS server: the IPv6 policy still follows how their traffic is routed.
+  const chosenSet = { rule_set: DNS_RULE_DOMAINS };
+  const chosenDns: Json[] = dnsChoices.length
+    ? [
+        ...(proxied.length
+          ? [and([{ query_type: IPV6_CARRIERS }, chosenSet, proxiedByDomain(proxied)], { action: "predefined", rcode: "NOERROR" })]
+          : []),
+        and([{ query_type: "AAAA" }, noPublicV6Interface, chosenSet, direct], { action: "predefined", rcode: "NOERROR" }),
+        // Not known to go direct (in Non-CN mode it depends on the answer): treated as proxied, IPv4 only.
+        and([{ query_type: IPV6_CARRIERS }, chosenSet, { ...direct, invert: true }], { action: "predefined", rcode: "NOERROR" }),
+        ...dnsChoices.map((r) => ({ ...matchFields(r.domains), action: "route", server: r.tag })),
+      ]
+    : [];
   return [
     ...tailnetRules,
     { preferred_by: "local", action: "route", server: "local" },
     { ...LOCAL_DOMAINS, action: "route", server: "local" },
     ...(s.steam ? [{ domain: ["lancache.steamcontent.com"], action: "route", server: "local" }] : []),
+
+    // DNS rules: listed domains resolved by the chosen server.
+    ...chosenDns,
 
     // Explicit proxy list and rules.
     ...customProxy,
@@ -397,8 +435,11 @@ function dnsRules(s: Settings, rules: BuiltRule[]): Json[] {
 /** DNS server types usable as the remote resolver (all reached through the proxy). */
 export const REMOTE_DNS_TYPES = ["tcp", "udp", "tls", "https", "quic", "h3"];
 
-/** The custom remote DNS server, or an error message. */
-export function customDnsServer(body: string): { server?: Json; error?: string } {
+/**
+ * A custom DNS server from its JSON body, or an error message. It is reached through `detour`
+ * unless the body names its own; null leaves it direct.
+ */
+export function customDnsServer(body: string, tag = "remote", detour: string | null = "proxy"): { server?: Json; error?: string } {
   let o: unknown;
   try {
     o = parseJsonc(body);
@@ -409,7 +450,7 @@ export function customDnsServer(body: string): { server?: Json; error?: string }
   const { type, tag: _tag, ...rest } = o as Json;
   if (typeof type !== "string" || !REMOTE_DNS_TYPES.includes(type)) return { error: `type 必须是以下之一：${REMOTE_DNS_TYPES.join("、")}` };
   if (!rest.server) return { error: "缺少 server" };
-  return { server: { type, tag: "remote", ...rest, ...("detour" in rest ? {} : { detour: "proxy" }) } };
+  return { server: { type, tag, ...rest, ...("detour" in rest || !detour ? {} : { detour }) } };
 }
 
 export function remoteDnsServer(provider: RemoteDnsChoice, protocol: RemoteDnsProtocol, custom = ""): Json {
@@ -429,7 +470,7 @@ export function remoteDnsServer(provider: RemoteDnsChoice, protocol: RemoteDnsPr
   };
 }
 
-function dnsServers(s: Settings): Json[] {
+function dnsServers(s: Settings, dnsChoices: BuiltDnsRule[]): Json[] {
   return [
     { type: "local", tag: "local", neighbor_domain: [".", ".lan", ".home.arpa"] },
     ...s.tailnets.filter(hasDns).map((t) => ({
@@ -440,6 +481,7 @@ function dnsServers(s: Settings): Json[] {
       accept_search_domain: true,
     })),
     remoteDnsServer(s.remoteDns.provider, s.remoteDns.protocol, s.remoteDns.custom),
+    ...dnsChoices.flatMap((r) => (r.server ? [r.server] : [])),
   ];
 }
 
@@ -530,7 +572,7 @@ const remoteRuleSet = (tag: string, url: string): Json => ({
 // Never-matching body for empty inline rule-sets.
 const NEVER = [{ domain_regex: ["a^"] }];
 
-function ruleSets(s: Settings, rules: BuiltRule[]): Json[] {
+function ruleSets(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): Json[] {
   const { domains: direct, cidrs: directIps } = directList(s);
   const proxy = proxyList(s);
   return [
@@ -576,6 +618,8 @@ function ruleSets(s: Settings, rules: BuiltRule[]): Json[] {
     ...(proxiedSets(s, rules).includes(RULE_DOMAINS)
       ? [{ type: "inline", tag: RULE_DOMAINS, rules: rules.filter((r) => matchCount(r.domains)).map((r) => matchFields(r.domains)) }]
       : []),
+    // Only for DNS: the domains of all DNS rules, for the IPv6 policy ahead of their servers.
+    ...(dnsChoices.length ? [{ type: "inline", tag: DNS_RULE_DOMAINS, rules: dnsChoices.map((r) => matchFields(r.domains)) }] : []),
   ];
 }
 
@@ -714,6 +758,7 @@ export function generateConfig(profile: Profile): Json {
     return object ? [{ node, object, endpoint: !!endpoint }] : [];
   });
   const rules = builtRules(s, memberTags(profile, nodes));
+  const dnsChoices = builtDnsRules(s);
   const endpoints = [
     ...s.tailnets.map((t) => tailnetEndpoint(t).endpoint).filter((e): e is Json => !!e),
     ...nodes.filter((x) => x.endpoint).map((x) => x.object),
@@ -722,8 +767,8 @@ export function generateConfig(profile: Profile): Json {
     $schema: "https://sing-box.sagernet.org/schema.json",
     log: { level: "info", timestamp: true },
     dns: {
-      servers: dnsServers(s),
-      rules: dnsRules(s, rules),
+      servers: dnsServers(s, dnsChoices),
+      rules: dnsRules(s, rules, dnsChoices),
       final: "remote",
       reverse_mapping: true,
     },
@@ -733,7 +778,7 @@ export function generateConfig(profile: Profile): Json {
     outbounds: outbounds(profile, nodes),
     route: {
       rules: routeRules(s, rules),
-      rule_set: ruleSets(s, rules),
+      rule_set: ruleSets(s, rules, dnsChoices),
       final: "proxy",
       auto_detect_interface: true,
       default_http_client: "rule-set-download",
@@ -883,6 +928,18 @@ export function validate(profile: Profile): Issue[] {
     else if (!group && !node) warn(at, "出口的节点或代理组已删除，暂不写入配置");
     else if (node && nodeObject(node).error) warn(at, `节点「${node.tag}」的配置有错误，暂不写入配置`);
     else if (group && !usable.has(group.id)) warn(at, `代理组「${group.tag}」还是空的，暂不写入配置`);
+  });
+  const outboundTags = new Set(["proxy", "auto", ...nodeTags, ...tailnetTags, ...profile.groups.map((g) => g.tag)]);
+  s.dnsRules.forEach((r, i) => {
+    const at: Where = { section: "routing", id: r.id, label: `DNS 规则 ${i + 1}` };
+    const { domains, invalid } = parseDomainList(r.lines.join("\n"));
+    if (invalid.length) err(at, `域名格式不正确：${describeInvalid(invalid)}`);
+    else if (!matchCount(domains)) warn(at, "还没有填写域名，暂不写入配置");
+    if (r.server !== "custom") return;
+    const { server, error } = customDnsServer(r.custom, dnsRuleTag(i), null);
+    if (error) err(at, `DNS 服务器：${error}（暂不写入配置）`);
+    else if (server!.detour === "direct") err(at, "detour 不能是 direct：不写 detour 就是直连访问");
+    else if (typeof server!.detour === "string" && !outboundTags.has(server!.detour)) err(at, `detour 指向的「${server!.detour}」不存在`);
   });
   // Groups containing each other (directly or through other groups) would never resolve.
   const inCycle = new Set<string>();

@@ -16,6 +16,8 @@ export interface Query {
   customProxy?: boolean;
   /** Listed in a rule that sends it to a node or group. */
   ruleDomain?: boolean;
+  /** Listed in a DNS rule; the walk reports its server as `dns-rule`. */
+  dnsRule?: boolean;
   publicV6Iface?: boolean;
 }
 
@@ -53,13 +55,15 @@ function leaf(rule: Json, q: Query): Tri {
                   ? !!q.customDirect
                   : s === "custom-rule-domains"
                     ? !!q.ruleDomain
-                    : false,
+                    : s === "custom-dns-domains"
+                      ? !!q.dnsRule
+                      : false,
           ),
         );
         break;
       }
       case "domain_suffix":
-        checks.push(([] as string[]).includes.call(v, "steamcontent.com") ? !!q.steam : false);
+        checks.push(([] as string[]).includes.call(v, "steamcontent.com") ? !!q.steam : ([] as string[]).includes.call(v, "dns-rule.test") ? !!q.dnsRule : false);
         break;
       case "domain":
       case "preferred_by":

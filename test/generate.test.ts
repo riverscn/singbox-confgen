@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { generateConfig, jsonErrorOffset, nodeObject, parseDomainList, parseJsonc, parseRuleList, stripComments, validate } from "../src/generate";
-import { blueprintProfile, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
+import { blueprintProfile, newDnsRule, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
 import { normalizeProfile } from "../src/storage";
 import { TEMPLATES, NODE_TYPES } from "../src/templates";
 import type { Profile, Tailnet } from "../src/types";
@@ -332,6 +332,109 @@ describe("custom remote DNS server", () => {
     const p = withCustom('{"type":"doh","server":"x"}');
     expect(validate(p).map((i) => i.message).join()).toContain("自定义代理 DNS 服务器：type 必须是");
     expect(gen(p).dns.servers.find((s: any) => s.tag === "remote").server).toBe("8.8.8.8");
+  });
+});
+
+describe("DNS rules", () => {
+  const withDnsRules = (...rules: Parameters<typeof newDnsRule>[0][]) => {
+    const p = blueprintProfile();
+    p.settings.dnsRules = rules.map((r) => newDnsRule(r));
+    return p;
+  };
+  const QTYPES = ["A", "AAAA", "HTTPS", "SVCB"] as const;
+
+  it("leaves the config as it was without rules", () => {
+    const cfg = gen();
+    expect(JSON.stringify(cfg)).not.toContain("custom-dns-domains");
+    expect(cfg.dns.servers.map((s: any) => s.tag)).toEqual(["local", "remote"]);
+  });
+
+  it("adds a custom server, reached directly unless it names a detour, and routes listed domains to it", () => {
+    const cfg = gen(
+      withDnsRules(
+        { custom: '{ // office\n "type": "udp", "server": "10.0.0.53" }', lines: ["corp.example.com", "domain:wiki.example.net"] },
+        { custom: '{"type":"tls","server":"9.9.9.9","detour":"proxy"}', lines: ["example.org"] },
+      ),
+    );
+    expect(cfg.dns.servers.slice(2)).toEqual([
+      { type: "udp", tag: "dns-rule-1", server: "10.0.0.53" },
+      { type: "tls", tag: "dns-rule-2", server: "9.9.9.9", detour: "proxy" },
+    ]);
+    const routes = cfg.dns.rules.filter((r: any) => r.action === "route" && String(r.server).startsWith("dns-rule"));
+    expect(routes).toEqual([
+      { domain_suffix: ["corp.example.com"], domain: ["wiki.example.net"], action: "route", server: "dns-rule-1" },
+      { domain_suffix: ["example.org"], action: "route", server: "dns-rule-2" },
+    ]);
+    expect(cfg.route.rule_set.find((r: any) => r.tag === "custom-dns-domains").rules).toEqual([
+      { domain: ["wiki.example.net"], domain_suffix: ["corp.example.com"] },
+      { domain_suffix: ["example.org"] },
+    ].map((r) => expect.objectContaining(r)));
+  });
+
+  it("can use the local or proxy DNS without adding a server", () => {
+    const cfg = gen(withDnsRules({ server: "local", lines: ["a.example"] }, { server: "remote", lines: ["b.example"] }));
+    expect(cfg.dns.servers.map((s: any) => s.tag)).toEqual(["local", "remote"]);
+    const routes = cfg.dns.rules.filter((r: any) => /^[ab]\.example$/.test(r.domain_suffix?.[0]));
+    expect(routes.map((r: any) => r.server)).toEqual(["local", "remote"]);
+  });
+
+  it("comes after tailnet split DNS and local-network names, before everything else", () => {
+    const p = withDnsRules({ server: "remote", lines: ["dns-rule.test"] });
+    p.settings.tailnets = [newTailnet({ dnsDomains: ["corp.example.com"] })];
+    const rules: any[] = gen(p).dns.rules;
+    const first = rules.findIndex((r) => JSON.stringify(r).includes("custom-dns-domains"));
+    expect(rules.slice(0, first).every((r) => r.server === "local" || r.server === "ts-dns")).toBe(true);
+    expect(rules.findIndex((r) => r.domain_suffix?.includes("dns-rule.test"))).toBeLessThan(
+      rules.findIndex((r) => r.action === "evaluate"),
+    );
+  });
+
+  it("asks the chosen server in every mode, and keeps the IPv6 policy of the route", () => {
+    const p = withDnsRules({ custom: '{"type":"udp","server":"10.0.0.53"}', lines: ["dns-rule.test"] });
+    p.settings.proxyRules = ["proxied.example"];
+    const rules: any[] = gen(p).dns.rules;
+    const ask = (q: Omit<Query, "qtype" | "dnsRule">, qtype: (typeof QTYPES)[number], v6 = true) =>
+      walk(rules, { ...q, qtype, dnsRule: true, publicV6Iface: v6 }).final;
+    for (const mode of ["Direct", "GFWList", "Non-CN", "Global"] as const) {
+      expect(ask({ mode }, "A"), mode).toBe("route:dns-rule-1");
+      expect(ask({ mode, gfw: true, cnSite: true }, "A"), mode).toBe("route:dns-rule-1");
+    }
+    // Goes direct: IPv6 as usual, unless there is no public IPv6 locally.
+    for (const qtype of QTYPES) expect(ask({ mode: "GFWList" }, qtype)).toBe("route:dns-rule-1");
+    expect(ask({ mode: "GFWList" }, "AAAA", false)).toBe("predefined:NOERROR");
+    expect(ask({ mode: "Non-CN", cnSite: true }, "AAAA")).toBe("route:dns-rule-1");
+    // Goes through the proxy, or might: IPv4 only.
+    for (const q of [{ mode: "GFWList", gfw: true }, { mode: "Global" }, { mode: "Non-CN" }, { mode: "Non-CN", customProxy: true, cnSite: true }] as const) {
+      expect(ask(q, "A")).toBe("route:dns-rule-1");
+      for (const qtype of ["AAAA", "HTTPS", "SVCB"] as const) expect(ask(q, qtype), `${q.mode} ${qtype}`).toBe("predefined:NOERROR");
+    }
+    // Listed as direct too: direct wins, as in routing.
+    expect(ask({ mode: "GFWList", gfw: true, customDirect: true }, "AAAA")).toBe("route:dns-rule-1");
+  });
+
+  it("leaves out rules without domains or with a broken server, and says why", () => {
+    const p = withDnsRules(
+      { lines: [] },
+      { custom: '{"type":"doh","server":"x"}', lines: ["a.example"] },
+      { custom: '{"type":"udp","server":"10.0.0.53","detour":"nope"}', lines: ["b.example"] },
+      { custom: '{"type":"udp","server":"10.0.0.53","detour":"direct"}', lines: ["c.example"] },
+      { server: "local", lines: ["1.2.3.4", "*.example.com"] },
+    );
+    const messages = validate(p).map((i) => i.message);
+    expect(messages).toContain("DNS 规则 1：还没有填写域名，暂不写入配置");
+    expect(messages.join()).toContain("DNS 规则 2：DNS 服务器：type 必须是");
+    expect(messages).toContain("DNS 规则 3：detour 指向的「nope」不存在");
+    expect(messages).toContain("DNS 规则 4：detour 不能是 direct：不写 detour 就是直连访问");
+    expect(messages.join()).toContain("DNS 规则 5：域名格式不正确：1.2.3.4（这里只能填域名）");
+    const cfg = gen(p);
+    expect(cfg.dns.servers.map((s: any) => s.tag)).toEqual(["local", "remote", "dns-rule-3", "dns-rule-4"]);
+    expect(cfg.dns.rules.some((r: any) => r.server === "dns-rule-2")).toBe(false);
+  });
+
+  it("survives saving and loading", () => {
+    const p = withDnsRules({ server: "remote", lines: ["a.example"] });
+    expect(normalizeProfile(JSON.parse(JSON.stringify(p))).settings.dnsRules).toEqual(p.settings.dnsRules);
+    expect(normalizeProfile({ nodes: [] }).settings.dnsRules).toEqual([]);
   });
 });
 

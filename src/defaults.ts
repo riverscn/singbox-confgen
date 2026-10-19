@@ -81,6 +81,7 @@ export const DNS_RULE_TEMPLATE = `{
   // 任意 sing-box DNS 服务器：tcp / udp / tls / https / quic / h3
   // 默认直连访问；要经代理访问，加上 "detour": "proxy"
   // 详见 https://sing-box.sagernet.org/zh/configuration/dns/server/
+  // 例如家里路由器的 DNS，才认得局域网里的设备名
   "type": "udp",
   "server": "192.168.1.1"
 }`;

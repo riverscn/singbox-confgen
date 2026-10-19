@@ -76,7 +76,7 @@ function fullProfile(): Profile {
   p.settings.dnsRules = [
     newDnsRule({ lines: ["corp.example.org", "domain_keyword:intra"] }),
     newDnsRule({ server: "remote", lines: ["domain:api.example.org"] }),
-    newDnsRule({ server: "local", lines: [".lan.example"] }),
+    newDnsRule({ custom: '{"type":"udp","server":"192.168.1.1"}', lines: [".", "lan", "home.arpa"] }),
     newDnsRule({
       custom: '{"type":"https","server":"1.1.1.1","path":"/dns-query","tls":{"enabled":true,"server_name":"cloudflare-dns.com"},"detour":"proxy"}',
       lines: ["domain_regex:^cdn\\d+\\.example\\.com$"],

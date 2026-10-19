@@ -482,6 +482,7 @@ const MATCH_NAMES: [keyof DomainMatch, string][] = [
 const SYNTAX: { example: string; name: string; desc: string; ip?: boolean }[] = [
   { example: "example.com", name: "域名后缀", desc: "匹配 example.com 和它的所有子域名" },
   { example: ".example.com", name: "域名后缀", desc: "只匹配子域名，不含 example.com 本身" },
+  { example: ".", name: "设备名", desc: "不带点的名字，如 nas（写成正则 ^[^.]+$）" },
   { example: "domain:example.com", name: "完整域名", desc: "只匹配 example.com 本身" },
   { example: "domain_keyword:google", name: "关键字", desc: "域名里含有 google 就匹配" },
   { example: "domain_regex:^cdn\\d+\\.", name: "正则", desc: "用正则匹配域名（Go RE2 语法，域名已转成小写）" },
@@ -1130,7 +1131,7 @@ function DnsRuleCard(props: {
         </FormField>
       )}
       <FormField label="域名">
-        {(id) => <ListEditor id={id} lines={r.lines} onChange={(lines) => set({ lines })} placeholder={"corp.example.com\nexample.net"} />}
+        {(id) => <ListEditor id={id} lines={r.lines} onChange={(lines) => set({ lines })} placeholder={".  # 不带点的设备名，如 nas\nlan\nhome.arpa"} />}
       </FormField>
     </ItemCard>
   );
@@ -2377,7 +2378,7 @@ export default function App() {
                   </Button>
                 </ListHead>
                 <Intro>
-                  让匹配的域名用指定的 DNS 服务器解析，例如公司域名用内网 DNS。只改由谁解析，流量仍按上面的分流走；走代理的域名照样只给 IPv4。在所有模式下生效，排在 tailnet 分域 DNS 和局域网域名之后；多条规则从上到下第一条匹配的生效。
+                  让匹配的域名用指定的 DNS 服务器解析，例如局域网域名（nas、nas.lan）交给路由器 192.168.1.1，其余照旧。只改由谁解析，流量仍按上面的分流走；走代理的域名照样只给 IPv4。在所有模式下生效，排在 tailnet 分域 DNS 之后、其他 DNS 规则（包括局域网域名默认用本地 DNS）之前；多条规则从上到下第一条匹配的生效。
                 </Intro>
                 {profile.settings.dnsRules.length === 0 && <Empty>还没有 DNS 规则。</Empty>}
                 {profile.settings.dnsRules.map((r, i) => (

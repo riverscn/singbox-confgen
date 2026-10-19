@@ -378,15 +378,30 @@ describe("DNS rules", () => {
     expect(routes.map((r: any) => r.server)).toEqual(["local", "remote"]);
   });
 
-  it("comes after tailnet split DNS and local-network names, before everything else", () => {
-    const p = withDnsRules({ server: "remote", lines: ["dns-rule.test"] });
+  it("comes after tailnet DNS only, so local-network names can go to the router", () => {
+    const router = '{"type":"udp","server":"192.168.1.1"}';
+    const p = withDnsRules({ custom: router, lines: [".", "lan", "home.arpa"] });
     p.settings.tailnets = [newTailnet({ dnsDomains: ["corp.example.com"] })];
     const rules: any[] = gen(p).dns.rules;
     const first = rules.findIndex((r) => JSON.stringify(r).includes("custom-dns-domains"));
-    expect(rules.slice(0, first).every((r) => r.server === "local" || r.server === "ts-dns")).toBe(true);
-    expect(rules.findIndex((r) => r.domain_suffix?.includes("dns-rule.test"))).toBeLessThan(
-      rules.findIndex((r) => r.action === "evaluate"),
-    );
+    expect(rules.slice(0, first).every((r) => r.server === "ts-dns")).toBe(true);
+    const route = rules.findIndex((r) => r.server === "dns-rule-1");
+    expect(rules[route]).toEqual({ domain_suffix: ["lan", "home.arpa"], domain_regex: ["^[^.]+$"], action: "route", server: "dns-rule-1" });
+    expect(route).toBeLessThan(rules.findIndex((r) => r.preferred_by === "local"));
+    expect(route).toBeLessThan(rules.findIndex((r) => r.domain_suffix?.includes(".lan") && r.server === "local"));
+  });
+
+  it("keeps every answer for local-network names, as the local resolver does", () => {
+    const p = withDnsRules({ custom: '{"type":"udp","server":"192.168.1.1"}', lines: ["lan"] });
+    const ipv6 = gen(p).dns.rules.filter((r: any) => r.action === "predefined" && JSON.stringify(r).includes("custom-dns-domains"));
+    expect(ipv6.length).toBeGreaterThan(0);
+    for (const r of ipv6) {
+      expect(JSON.stringify(r)).toContain('"domain_suffix":[".local",".lan",".localdomain",".home.arpa",".internal",".intranet"],"domain_regex":["^[^.]+$"],"invert":true');
+    }
+  });
+
+  it("reads a lone . as device names without a dot", () => {
+    expect(parseDomainList(".\n.lan").domains).toEqual({ domain: [], domain_suffix: [".lan"], domain_keyword: [], domain_regex: ["^[^.]+$"] });
   });
 
   it("asks the chosen server in every mode, and keeps the IPv6 policy of the route", () => {

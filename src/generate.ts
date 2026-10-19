@@ -15,6 +15,8 @@ const CUSTOM_DIRECT_IPS = "custom-direct-ips";
 const RULE_DOMAINS = "custom-rule-domains";
 const RULE_IPS = "custom-rule-ips";
 const DNS_RULE_DOMAINS = "custom-dns-domains";
+/** Device names without a dot (e.g. `nas`), what the `.` entry stands for. */
+const SINGLE_LABEL = "^[^.]+$";
 const PUBLIC_V6 = ["2000::/3"];
 const IPV6_CARRIERS = ["AAAA", "HTTPS", "SVCB"];
 const LOCAL_DOMAINS = {
@@ -163,6 +165,8 @@ function parseEntry(line: string, allowIp: boolean): { field: keyof DomainMatch 
     const problem = regexProblem(value);
     return problem ? { problem } : { field, value };
   }
+  // `.` alone: device names without a dot, like the local server's `neighbor_domain`.
+  if (!field && value === ".") return { field: "domain_regex", value: SINGLE_LABEL };
   const v = value.toLowerCase();
   if (field === "domain_keyword") return /^[a-z0-9_.-]+$/.test(v) ? { field, value: v } : { problem: "关键字只能包含字母、数字和 . _ -" };
   if (field === "ip_cidr" || (!field && parseCidr(v))) {
@@ -378,7 +382,8 @@ function dnsRules(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
       ]
     : [];
   // Domains with a chosen DNS server: the IPv6 policy still follows how their traffic is routed.
-  const chosenSet = { rule_set: DNS_RULE_DOMAINS };
+  // Local-network names always go direct and keep every answer, as with the local resolver.
+  const chosenSet = and([{ rule_set: DNS_RULE_DOMAINS }, { ...LOCAL_DOMAINS, domain_regex: [SINGLE_LABEL], invert: true }]);
   const chosenDns: Json[] = dnsChoices.length
     ? [
         ...(proxied.length
@@ -392,12 +397,12 @@ function dnsRules(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
     : [];
   return [
     ...tailnetRules,
+    // DNS rules: listed domains resolved by the chosen server, local-network names included.
+    ...chosenDns,
+
     { preferred_by: "local", action: "route", server: "local" },
     { ...LOCAL_DOMAINS, action: "route", server: "local" },
     ...(s.steam ? [{ domain: ["lancache.steamcontent.com"], action: "route", server: "local" }] : []),
-
-    // DNS rules: listed domains resolved by the chosen server.
-    ...chosenDns,
 
     // Explicit proxy list and rules.
     ...customProxy,

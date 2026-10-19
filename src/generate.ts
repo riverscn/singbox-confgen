@@ -45,7 +45,11 @@ const hasProxyRules = (s: Settings) => {
   const { domains, cidrs } = proxyList(s);
   return matchCount(domains) + cidrs.length > 0;
 };
-const hasDns = (t: Tailnet) => t.magicDns || matchCount(parseDomainList(t.dnsDomains.join("\n")).domains) > 0;
+/** Domains of the DNS rules sent to this tailnet's DNS. */
+const tailnetDnsRules = (s: Settings, t: Tailnet) =>
+  s.dnsRules.filter((r) => r.server === "tailnet" && r.tailnet === t.id && matchCount(parseDomainList(r.lines.join("\n")).domains) > 0);
+/** The tailnet's DNS server is needed: for MagicDNS, or for DNS rules sent to it. */
+const hasDns = (s: Settings, t: Tailnet) => t.magicDns || tailnetDnsRules(s, t).length > 0;
 
 // ---------------------------------------------------------------------------
 // Input parsing
@@ -299,11 +303,15 @@ function builtRules(s: Settings, tags: Map<string, string>): BuiltRule[] {
 /** The DNS server tag a DNS rule with its own server gets. */
 export const dnsRuleTag = (index: number) => `dns-rule-${index + 1}`;
 
-/** A DNS rule that makes it into the config: its server tag, the server to add (custom only) and its domains. */
+/**
+ * A DNS rule that makes it into the config: its server tag, the server to add (custom only) and
+ * its domains. Domains sent to a tailnet keep every answer, as its MagicDNS names do.
+ */
 interface BuiltDnsRule {
   tag: string;
   server?: Json;
   domains: DomainMatch;
+  tailnet?: boolean;
 }
 
 /** DNS rules with at least one valid domain and a usable server; the rest are left out (validate says why). */
@@ -311,6 +319,10 @@ function builtDnsRules(s: Settings): BuiltDnsRule[] {
   return s.dnsRules.flatMap((r, i): BuiltDnsRule[] => {
     const { domains } = parseDomainList(r.lines.join("\n"));
     if (!matchCount(domains)) return [];
+    if (r.server === "tailnet") {
+      const t = s.tailnets.find((x) => x.id === r.tailnet);
+      return t ? [{ tag: dnsTag(t), domains, tailnet: true }] : [];
+    }
     if (r.server !== "custom") return [{ tag: r.server, domains }];
     const { server } = customDnsServer(r.custom, dnsRuleTag(i), null);
     return server ? [{ tag: dnsRuleTag(i), server, domains }] : [];
@@ -368,13 +380,7 @@ function dnsRules(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
   const ecs = s.clientSubnet.trim() ? { client_subnet: s.clientSubnet.trim() } : {};
   const proxied = proxiedSets(s, rules);
   const direct = directByDomain(s, proxied);
-  const tailnetRules: Json[] = [
-    ...s.tailnets.flatMap((t) => {
-      const { domains } = parseDomainList(t.dnsDomains.join("\n"));
-      return matchCount(domains) ? [{ ...matchFields(domains), action: "route", server: dnsTag(t) }] : [];
-    }),
-    ...s.tailnets.filter((t) => t.magicDns).map((t) => ({ preferred_by: dnsTag(t), action: "route", server: dnsTag(t) })),
-  ];
+  const magicDns: Json[] = s.tailnets.filter((t) => t.magicDns).map((t) => ({ preferred_by: dnsTag(t), action: "route", server: dnsTag(t) }));
   const customProxy: Json[] = proxied.length
     ? [
         and([{ query_type: IPV6_CARRIERS }, proxiedByDomain(proxied)], { action: "predefined", rcode: "NOERROR" }),
@@ -382,23 +388,26 @@ function dnsRules(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
       ]
     : [];
   // Domains with a chosen DNS server: the IPv6 policy still follows how their traffic is routed.
-  // Local-network names always go direct and keep every answer, as with the local resolver.
+  // Local-network names always go direct and keep every answer, as with the local resolver;
+  // so do domains sent to a tailnet (they are not in the rule-set).
   const chosenSet = and([{ rule_set: DNS_RULE_DOMAINS }, { ...LOCAL_DOMAINS, domain_regex: [SINGLE_LABEL], invert: true }]);
-  const chosenDns: Json[] = dnsChoices.length
-    ? [
+  const chosenDns: Json[] = [
+    ...(dnsChoices.some((r) => !r.tailnet)
+      ? [
         ...(proxied.length
           ? [and([{ query_type: IPV6_CARRIERS }, chosenSet, proxiedByDomain(proxied)], { action: "predefined", rcode: "NOERROR" })]
           : []),
         and([{ query_type: "AAAA" }, noPublicV6Interface, chosenSet, direct], { action: "predefined", rcode: "NOERROR" }),
         // Not known to go direct (in Non-CN mode it depends on the answer): treated as proxied, IPv4 only.
         and([{ query_type: IPV6_CARRIERS }, chosenSet, { ...direct, invert: true }], { action: "predefined", rcode: "NOERROR" }),
-        ...dnsChoices.map((r) => ({ ...matchFields(r.domains), action: "route", server: r.tag })),
-      ]
-    : [];
+        ]
+      : []),
+    ...dnsChoices.map((r) => ({ ...matchFields(r.domains), action: "route", server: r.tag })),
+  ];
   return [
-    ...tailnetRules,
-    // DNS rules: listed domains resolved by the chosen server, local-network names included.
+    // DNS rules first: listed domains go to the chosen server, MagicDNS and local-network names included.
     ...chosenDns,
+    ...magicDns,
 
     { preferred_by: "local", action: "route", server: "local" },
     { ...LOCAL_DOMAINS, action: "route", server: "local" },
@@ -478,7 +487,7 @@ export function remoteDnsServer(provider: RemoteDnsChoice, protocol: RemoteDnsPr
 function dnsServers(s: Settings, dnsChoices: BuiltDnsRule[]): Json[] {
   return [
     { type: "local", tag: "local", neighbor_domain: [".", ".lan", ".home.arpa"] },
-    ...s.tailnets.filter(hasDns).map((t) => ({
+    ...s.tailnets.filter((t) => hasDns(s, t)).map((t) => ({
       type: "tailscale",
       tag: dnsTag(t),
       endpoint: t.tag,
@@ -623,8 +632,10 @@ function ruleSets(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
     ...(proxiedSets(s, rules).includes(RULE_DOMAINS)
       ? [{ type: "inline", tag: RULE_DOMAINS, rules: rules.filter((r) => matchCount(r.domains)).map((r) => matchFields(r.domains)) }]
       : []),
-    // Only for DNS: the domains of all DNS rules, for the IPv6 policy ahead of their servers.
-    ...(dnsChoices.length ? [{ type: "inline", tag: DNS_RULE_DOMAINS, rules: dnsChoices.map((r) => matchFields(r.domains)) }] : []),
+    // Only for DNS: the domains of the DNS rules (but those sent to a tailnet), for the IPv6 policy ahead of their servers.
+    ...(dnsChoices.some((r) => !r.tailnet)
+      ? [{ type: "inline", tag: DNS_RULE_DOMAINS, rules: dnsChoices.filter((r) => !r.tailnet).map((r) => matchFields(r.domains)) }]
+      : []),
   ];
 }
 
@@ -893,7 +904,7 @@ export function validate(profile: Profile): Issue[] {
     const at: Where = { section: "tailscale", id: t.id, label: `Tailscale「${t.tag || "(未命名)"}」` };
     if (!TAG_RE.test(t.tag)) err(at, "标签不能为空，首尾不能有空格");
     addTag(t.tag);
-    if (hasDns(t)) addTag(dnsTag(t));
+    if (hasDns(s, t)) addTag(dnsTag(t));
     const { endpoint, error } = tailnetEndpoint(t);
     if (error) err(at, `端点 JSON 有误：${error}`);
     if (endpoint) {
@@ -903,8 +914,6 @@ export function validate(profile: Profile): Issue[] {
       if (t.asProxy && !endpoint.exit_node) warn(at, "作为代理出口但没有填出口节点，经它的流量只能到达 tailnet 内的地址");
       if ("exit_node" in (parseJsonc(t.endpoint) as Json)) warn(at, "端点 JSON 里的 exit_node 不会生效，请填在「出口节点」里");
     }
-    const dns = parseDomainList(t.dnsDomains.join("\n"));
-    if (dns.invalid.length) err(at, `分域 DNS 域名格式不正确：${describeInvalid(dns.invalid)}`);
     const routes = parseRuleList(t.routes.join("\n"));
     if (routes.invalid.length) err(at, `额外路由格式不正确：${describeInvalid(routes.invalid)}`);
   }
@@ -940,12 +949,24 @@ export function validate(profile: Profile): Issue[] {
     const { domains, invalid } = parseDomainList(r.lines.join("\n"));
     if (invalid.length) err(at, `域名格式不正确：${describeInvalid(invalid)}`);
     else if (!matchCount(domains)) warn(at, "还没有填写域名，暂不写入配置");
+    if (r.server === "tailnet") {
+      const t = s.tailnets.find((x) => x.id === r.tailnet);
+      if (!r.tailnet) warn(at, "还没有选择 tailnet，暂不写入配置");
+      else if (!t) warn(at, "选择的 tailnet 已删除，暂不写入配置");
+      else if (!t.acceptDefaultResolvers) {
+        warn(
+          at,
+          `tailnet「${t.tag}」没有开启「使用 tailnet 的默认 DNS 服务器」：不在 MagicDNS 和 tailnet 后台 split DNS 里的域名会得到 NXDOMAIN；后台已配的 split DNS 开启 MagicDNS 即可，不用写在这里`,
+        );
+      }
+      return;
+    }
     if (r.server !== "custom") return;
     const { server, error } = customDnsServer(r.custom, dnsRuleTag(i), null);
     if (error) err(at, `DNS 服务器：${error}（暂不写入配置）`);
     else if (server!.detour === "direct") err(at, "detour 不能是 direct：不写 detour 就是直连访问");
     else if (typeof server!.detour === "string" && !outboundTags.has(server!.detour)) err(at, `detour 指向的「${server!.detour}」不存在`);
-    else if (tailnetTags.has(String(server!.detour))) warn(at, `经 tailnet「${server!.detour}」的内网域名，用 Tailscale 页的「分域 DNS」更合适：它用 tailnet 自己的 DNS 设置`);
+    else if (tailnetTags.has(String(server!.detour))) warn(at, `经 tailnet「${server!.detour}」的内网域名，服务器选「tailnet ${server!.detour} 的 DNS」更合适：它用 tailnet 自己的 DNS 设置`);
   });
   // Groups containing each other (directly or through other groups) would never resolve.
   const inCycle = new Set<string>();

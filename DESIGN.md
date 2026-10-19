@@ -19,18 +19,20 @@
 
 规则：每条规则是一组域名/IP 加一个出口（任一节点或代理组），生成为一条 `route` 规则，指向该出口。除 Direct 外始终生效，位置在自定义直连之后、自定义代理之前，多条规则按列表顺序第一条匹配的生效。规则里的域名另放进 `custom-rule-domains`（只给 DNS 用），DNS 上和代理域名一样处理（远程解析、只给 A）；远程 DNS 仍经 `proxy` 访问，不经规则自己的出口。出口未选、已删除或是空代理组，或者没有有效条目时，这条规则不写入配置，并给出提醒。
 
-DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DNS、代理 DNS，或用 JSON 自定义任意 sing-box DNS 服务器），匹配的域名交给它解析。
-- 要补的空白是不经 Tailscale 的 VPN：用「规则」把公司域名送进 WireGuard、OpenConnect、OpenVPN 节点后，这些域名默认按走代理处理，经 `proxy` 问远程 DNS，拿不到内网地址。DNS 规则让它们去问内网 DNS，`detour` 填该 VPN 节点。
-- 和 Tailscale 的分工：tailnet 里的内网域名用 tailnet 的「分域 DNS」（第 4 节），它用 tailnet 自己的 DNS 设置（MagicDNS、tailnet 下发的 DNS），排在 DNS 规则前面。自定义服务器的 `detour` 指向 tailnet 时给出提醒，建议改用分域 DNS。
+DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DNS、代理 DNS、某个 tailnet 的 DNS，或用 JSON 自定义任意 sing-box DNS 服务器），匹配的域名交给它解析。按域名指定 DNS 只有这一处。
+- 不经 Tailscale 的 VPN：用「规则」把公司域名送进 WireGuard、OpenConnect、OpenVPN 节点后，这些域名默认按走代理处理，经 `proxy` 问远程 DNS，拿不到内网地址。DNS 规则让它们去问内网 DNS（自定义服务器），`detour` 填该 VPN 节点。
+- 经 Tailscale：tailnet 后台配置的 split DNS 已由 MagicDNS 处理（`preferred_by` 对 tailscale 服务器匹配 MagicDNS 设备名和 DNS 路由后缀），不用写。后台没配 split DNS、但 tailnet 的全局 DNS 能解析的域名（例如没有后台权限时的公司域名），服务器选「tailnet 的 DNS」，并开启该 tailnet 的「使用 tailnet 的默认 DNS 服务器」（`accept_default_resolvers`）。不开时，tailscale DNS 服务器对不属于 tailnet 的域名返回 NXDOMAIN（sing-box 文档），所以这种组合会给出提醒。用 tailnet 的 DNS 而不是自定义服务器加 `detour: <tailnet>`，是因为它跟着 tailnet 后台的 DNS 设置走，不用写死内网 DNS 的地址；自定义服务器的 `detour` 指向 tailnet 时也会提醒。
+- 交给 tailnet DNS 的域名不套用下面的 IPv6 策略，所有记录照常返回，和 MagicDNS 一样；它们也不放进 `custom-dns-domains`。
+- 以前 Tailscale 卡片上有单独的「分域 DNS」列表，现已并入这里：旧配置加载时、导入 sing-box 配置时，转成指向该 tailnet 的 DNS 规则，排在其他 DNS 规则前面；生成的配置不变。
 - 局域网域名通常不需要它：系统 DNS 一般就是路由器，设备名和 `.lan` 原本就交给本地 DNS；只有网络下发的 DNS 不是路由器时，才需要用它把局域网域名指给路由器。
 - 只改“由谁解析”，不改流量走向：路由仍按模式和上面的列表决定。在所有模式下生效（包括 Direct）。
-- 位置在 tailnet 分域 DNS 和 MagicDNS 之后，其他 DNS 规则之前，包括局域网域名默认交给本地 DNS 的两条（`preferred_by: local`、本地域名），所以需要时也能把局域网域名改交给路由器。多条规则按列表顺序第一条匹配的生效。
+- 位置在所有 DNS 规则最前，包括 MagicDNS 和局域网域名默认交给本地 DNS 的两条（`preferred_by: local`、本地域名）：明确写出的选择优先，需要时也能把局域网域名改交给路由器。多条规则按列表顺序第一条匹配的生效。
 - 局域网域名（本地域名后缀和不带点的设备名）不套用下面的 IPv6 策略：和交给本地 DNS 时一样，所有记录照常返回。
 - 列表里单独一个 `.` 表示不带点的设备名（如 `nas`），和 `local` 服务器 `neighbor_domain` 里的 `.` 同义，生成为 `domain_regex: ^[^.]+$`。所有列表都认这个写法。
-- IPv6 策略不变：域名会走代理（代理域名、规则域名，或不能确定直连的，例如 Non-CN 模式下不在国内列表里的）时 AAAA、HTTPS、SVCB 返回空；确定直连时照常，本机没有公网 IPv6 时 AAAA 返回空。为此所有 DNS 规则的域名另放进 `custom-dns-domains`（只给 DNS 用）。
+- IPv6 策略不变：域名会走代理（代理域名、规则域名，或不能确定直连的，例如 Non-CN 模式下不在国内列表里的）时 AAAA、HTTPS、SVCB 返回空；确定直连时照常，本机没有公网 IPv6 时 AAAA 返回空。为此 DNS 规则的域名（交给 tailnet DNS 的除外）另放进 `custom-dns-domains`（只给 DNS 用）。
 - 自定义服务器的标签是 `dns-rule-<序号>`；没写 `detour` 时直连访问（要经代理就写 `"detour": "proxy"`）。`detour` 不能写 `direct`（sing-box 拒绝指向空 direct 出站的 detour），指向不存在的出站也报错。JSON 有误或没有有效域名的规则不写入配置，并给出提醒。
 
-所有域名列表（直连、代理、tailnet 的分域 DNS 和额外路由）的写法与 sing-box 一致，不另设语法：每行一项，不加前缀时按 `domain_suffix` 匹配（`example.com` 同时匹配子域名，`.example.com` 只匹配子域名），IP 和网段按 `ip_cidr`；也可以用字段名作前缀，写成 `domain:`、`domain_suffix:`、`domain_keyword:`、`domain_regex:`、`ip_cidr:`。正则按 Go RE2 校验（不支持环视和反向引用）；sing-box 拿小写后的域名去匹配正则，所以正则里出现大写字母会被判为错误（除非写了 `(?i)`）。`domain_regex:` 行里的逗号和 `#` 属于正则本身，注释要用空格隔开的 ` #`。
+所有域名列表（直连、代理、规则、DNS 分流、tailnet 的额外路由）的写法与 sing-box 一致，不另设语法：每行一项，不加前缀时按 `domain_suffix` 匹配（`example.com` 同时匹配子域名，`.example.com` 只匹配子域名），IP 和网段按 `ip_cidr`；也可以用字段名作前缀，写成 `domain:`、`domain_suffix:`、`domain_keyword:`、`domain_regex:`、`ip_cidr:`。正则按 Go RE2 校验（不支持环视和反向引用）；sing-box 拿小写后的域名去匹配正则，所以正则里出现大写字母会被判为错误（除非写了 `(?i)`）。`domain_regex:` 行里的逗号和 `#` 属于正则本身，注释要用空格隔开的 ` #`。
 
 ## 2. DNS 策略
 
@@ -77,7 +79,7 @@ DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DN
 ## 4. Tailscale
 
 - `preferred_by` 对 tailnet 设备和子网路由生效，并排除出口节点的 `/0` 路由（源码中 `peer.Route.Bits() > 0`），所以设置出口节点不会改变普通流量的走向。
-- **分域 DNS 是关键**：例如把公司域名 `corp.example.com` 交给该 tailnet 的 DNS 解析，才能拿到内网地址（实测：同一个内部域名，经 tailnet DNS 解析为 `192.168.x.x`，公网 DNS 给的是公网地址）。
+- **内网域名要交给 tailnet 的 DNS**：例如公司域名 `corp.example.com`，经 tailnet DNS 才能拿到内网地址（实测：同一个内部域名，经 tailnet DNS 解析为 `192.168.x.x`，公网 DNS 给的是公网地址）。后台配了 split DNS 的，MagicDNS 自动处理；没配的，在 DNS 分流里交给 tailnet 的 DNS（第 1 节）。
 - **出口节点对访问子网不是必需的**：去掉 `exit_node` 后，子网里的域名解析和连接都照常（实测）。只有目标地址没有被任何子网路由覆盖时，才需要靠出口节点转发。
 - Tailscale 重启后的第一次查询可能需要 2–3 秒建立连接，属于冷启动。
 
@@ -86,9 +88,10 @@ DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DN
 | 选项 | 生成内容 |
 |---|---|
 | 端点 JSON（可写注释） | `endpoints` 中的一项，`type` 和 `tag` 由生成器填写 |
-| MagicDNS | `<标签>-dns` 服务器 + `preferred_by` DNS 规则 |
-| 使用 tailnet 的默认 DNS | DNS 服务器上的 `accept_default_resolvers` |
-| 分域 DNS 域名 | 域名匹配 → `<标签>-dns`，放在所有 DNS 规则最前 |
+| MagicDNS | `<标签>-dns` 服务器 + `preferred_by` DNS 规则（tailnet 设备名和后台配置的 split DNS） |
+| 使用 tailnet 的默认 DNS | DNS 服务器上的 `accept_default_resolvers`：DNS 分流交给它的域名不在 MagicDNS 里时，用 tailnet 的全局 DNS 解析 |
+
+DNS 分流里选择 tailnet 的 DNS 的规则：域名匹配 → `<标签>-dns`（见第 1 节）。只有 DNS 规则用到、没开 MagicDNS 时，也会生成 `<标签>-dns` 服务器。
 | 额外路由 | 域名匹配/`ip_cidr` → 端点 |
 | 作为代理出口 | 端点加入 `proxy` 选择器（不进 `auto`）；「出口节点」字段是 `exit_node` 的唯一来源（端点 JSON 里的会被忽略并提醒），导入时端点里的 `exit_node` 会提取到这个字段，但开关只看原配置里是否有选择器列出了该端点（只设了 `exit_node` 而没进任何组时保持关闭，出口节点只服务于额外路由）。字段只在开关打开（或已有值）时显示 |
 
@@ -98,7 +101,7 @@ DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DN
 
 - 核心策略只保留一套，不开放逐条编辑。规则之间相互依赖（race 规则的顺序、`speculative` 的位置等），随手改一条可能悄悄出错；需要深度定制的用户直接修改生成的 JSON。
 - 开放的策略选项：走代理时使用的 DNS 服务器；以及按域名指定 DNS 服务器的 DNS 分流（见第 1 节），它只改解析者，IPv6 策略照旧。除了三家预设，还可以选“自定义”，用一段 JSON 写任意 sing-box DNS 服务器（tcp/udp/tls/https/quic/h3），生成器填写 `tag: remote`，没写 `detour` 时补上 `proxy`。JSON 有误时报错，并暂时改用 Google，保证配置仍能加载。
-- 导入：直接读现有的 sing-box 或 Clash 配置（不再有本工具自己的导入导出格式）。sing-box 配置只取节点（代理类出站和 WireGuard/OpenConnect/OpenVPN 端点）和 Tailscale（端点，及其 DNS 服务器的 MagicDNS、默认 DNS、分域 DNS，额外路由，是否在代理组里）。DNS 和分流规则由本工具的策略生成。
+- 导入：直接读现有的 sing-box 或 Clash 配置（不再有本工具自己的导入导出格式）。sing-box 配置只取节点（代理类出站和 WireGuard/OpenConnect/OpenVPN 端点）和 Tailscale（端点，及其 DNS 服务器的 MagicDNS、默认 DNS，额外路由，是否在代理组里；交给 tailnet DNS 的域名转成 DNS 分流规则）。DNS 和分流规则由本工具的策略生成。
   - 节点引用的 `domain_resolver` 如果在新配置里不存在（例如 `cn-dns`），会去掉并说明。
   - 源配置有代理组时，不在任何组里的节点（例如 ShadowTLS 这种 detour 辅助节点）导入后也不加入代理组。
   - 总是新建一套配置，不并入正在编辑的配置；与本工具自带出站（`proxy`、`auto`、`direct`）重名的标签自动改名，detour 跟着改。

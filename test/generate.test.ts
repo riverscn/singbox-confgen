@@ -46,9 +46,9 @@ function personalProfile(): Profile {
       }`,
       exitNode: "office-gw",
       acceptDefaultResolvers: true,
-      dnsDomains: ["corp.example.com"],
     }),
   ];
+  p.settings.dnsRules = [newDnsRule({ server: "tailnet", tailnet: p.settings.tailnets[1].id, lines: ["corp.example.com"] })];
   return p;
 }
 
@@ -378,13 +378,13 @@ describe("DNS rules", () => {
     expect(routes.map((r: any) => r.server)).toEqual(["local", "remote"]);
   });
 
-  it("comes after tailnet DNS only, so local-network names can go to the router", () => {
+  it("comes before every other DNS rule, so MagicDNS and local-network names can be sent elsewhere", () => {
     const router = '{"type":"udp","server":"192.168.1.1"}';
     const p = withDnsRules({ custom: router, lines: [".", "lan", "home.arpa"] });
-    p.settings.tailnets = [newTailnet({ dnsDomains: ["corp.example.com"] })];
+    p.settings.tailnets = [newTailnet()];
     const rules: any[] = gen(p).dns.rules;
-    const first = rules.findIndex((r) => JSON.stringify(r).includes("custom-dns-domains"));
-    expect(rules.slice(0, first).every((r) => r.server === "ts-dns")).toBe(true);
+    expect(JSON.stringify(rules[0])).toContain("custom-dns-domains");
+    expect(rules.findIndex((r) => r.server === "dns-rule-1")).toBeLessThan(rules.findIndex((r) => r.preferred_by === "ts-dns"));
     const route = rules.findIndex((r) => r.server === "dns-rule-1");
     expect(rules[route]).toEqual({ domain_suffix: ["lan", "home.arpa"], domain_regex: ["^[^.]+$"], action: "route", server: "dns-rule-1" });
     expect(route).toBeLessThan(rules.findIndex((r) => r.preferred_by === "local"));
@@ -427,7 +427,7 @@ describe("DNS rules", () => {
     expect(ask({ mode: "GFWList", gfw: true, customDirect: true }, "AAAA")).toBe("route:dns-rule-1");
   });
 
-  it("starts from a template for an internal DNS behind a VPN node, and points tailnets to their split DNS", () => {
+  it("starts from a template for an internal DNS behind a VPN node, and points tailnets to their own DNS", () => {
     const p = withDnsRules({ lines: ["corp.example.com"] });
     p.nodes.push(newNode({ tag: "wg", body: filledBody("wireguard") }));
     expect(validate(p).filter((i) => i.id === p.settings.dnsRules[0].id)).toEqual([]);
@@ -436,7 +436,7 @@ describe("DNS rules", () => {
     expect(validate(p).filter((i) => i.id === p.settings.dnsRules[0].id)).toEqual([]);
     p.settings.tailnets = [newTailnet({ tag: "office" })];
     p.settings.dnsRules[0].custom = '{"type":"udp","server":"10.0.0.53","detour":"office"}';
-    expect(validate(p).find((i) => i.id === p.settings.dnsRules[0].id)).toMatchObject({ level: "warning", detail: expect.stringContaining("分域 DNS") });
+    expect(validate(p).find((i) => i.id === p.settings.dnsRules[0].id)).toMatchObject({ level: "warning", detail: expect.stringContaining("「tailnet office 的 DNS」") });
   });
 
   it("leaves out rules without domains or with a broken server, and says why", () => {
@@ -807,18 +807,55 @@ describe("Tailscale", () => {
     expect(cfg.endpoints).toEqual([{ type: "tailscale", tag: "home", hostname: "h" }]);
   });
 
-  it("creates the DNS server only when MagicDNS or split DNS is used", () => {
+  /** A tailnet without MagicDNS, and DNS rules sending these domains to its DNS. */
+  const splitDns = (lines: string[], extra: Partial<Tailnet> = {}) => {
+    const t = newTailnet({ tag: "a", magicDns: false, ...extra });
+    const p = withTailnets(t);
+    p.settings.dnsRules = [newDnsRule({ server: "tailnet", tailnet: t.id, lines })];
+    return p;
+  };
+
+  it("creates the DNS server only when MagicDNS or a DNS rule uses it", () => {
     const none = gen(withTailnets(newTailnet({ tag: "a", magicDns: false })));
     expect(none.dns.servers.some((s: any) => s.type === "tailscale")).toBe(false);
     expect(JSON.stringify(none.dns.rules)).not.toContain("a-dns");
-    const split = gen(withTailnets(newTailnet({ tag: "a", magicDns: false, dnsDomains: ["corp.example.com"] })));
+    const split = gen(splitDns(["corp.example.com"]));
     expect(split.dns.servers.find((s: any) => s.tag === "a-dns")).toEqual({ type: "tailscale", tag: "a-dns", endpoint: "a", accept_search_domain: true });
     expect(split.dns.rules[0]).toEqual({ domain_suffix: ["corp.example.com"], action: "route", server: "a-dns" });
     expect(JSON.stringify(split.dns.rules)).not.toContain('"preferred_by":"a-dns"');
   });
 
+  it("keeps every answer for domains sent to a tailnet's DNS, outside the IPv6 policy", () => {
+    const cfg = gen(splitDns(["corp.example.com"]));
+    expect(JSON.stringify(cfg)).not.toContain("custom-dns-domains");
+    const p = splitDns(["corp.example.com"]);
+    p.settings.dnsRules.push(newDnsRule({ server: "remote", lines: ["b.example"] }));
+    expect(gen(p).route.rule_set.find((r: any) => r.tag === "custom-dns-domains").rules).toEqual([{ domain_suffix: ["b.example"] }]);
+  });
+
+  it("warns when a tailnet's DNS gets domains it would answer with NXDOMAIN, or the tailnet is gone", () => {
+    const p = splitDns(["corp.example.com"]);
+    expect(validate(p).find((i) => i.id === p.settings.dnsRules[0].id)?.detail).toContain("NXDOMAIN");
+    expect(validate(splitDns(["corp.example.com"], { acceptDefaultResolvers: true })).filter((i) => i.section === "routing")).toEqual([]);
+    p.settings.tailnets = [];
+    expect(validate(p).find((i) => i.id === p.settings.dnsRules[0].id)?.detail).toBe("选择的 tailnet 已删除，暂不写入配置");
+    expect(JSON.stringify(gen(p).dns)).not.toContain("a-dns");
+  });
+
+  it("moves split DNS saved on a tailnet into DNS rules, ahead of the others", () => {
+    const saved = JSON.parse(JSON.stringify(blueprintProfile()));
+    saved.settings.tailnets = [{ id: "t1", tag: "work", dnsDomains: ["corp.example.com", ""] }, { id: "t2", tag: "home", dnsDomains: [] }];
+    saved.settings.dnsRules = [{ id: "r1", server: "remote", lines: ["b.example"] }];
+    const s = normalizeProfile(saved).settings;
+    expect(s.tailnets.map((t) => "dnsDomains" in t)).toEqual([false, false]);
+    expect(s.dnsRules.map((r) => [r.server, r.tailnet, r.lines])).toEqual([
+      ["tailnet", "t1", ["corp.example.com", ""]],
+      ["remote", "", ["b.example"]],
+    ]);
+  });
+
   it("takes match prefixes in split DNS and extra routes", () => {
-    const cfg = gen(withTailnets(newTailnet({ tag: "a", magicDns: false, dnsDomains: ["domain_keyword:corp"], routes: ["domain:nas.lan", "10.0.0.0/8"] })));
+    const cfg = gen(splitDns(["domain_keyword:corp"], { routes: ["domain:nas.lan", "10.0.0.0/8"] }));
     expect(cfg.dns.rules[0]).toEqual({ domain_keyword: ["corp"], action: "route", server: "a-dns" });
     expect(cfg.route.rules).toContainEqual({ domain: ["nas.lan"], ip_cidr: ["10.0.0.0/8"], action: "route", outbound: "a" });
   });

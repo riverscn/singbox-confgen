@@ -18,7 +18,7 @@
 | 开了代理，部分连接却绕过去或连不上 | 应用优先用 IPv6，而代理服务器没有 IPv6，或者 IPv6 根本不经过 sing-box | 走代理只给 A 记录，连 HTTPS/SVCB 里的 IPv6 提示一起清掉；本机没有 IPv6 时直连也干净地回退到 IPv4（[IPv6 策略](DESIGN.md#3-ipv6-策略)） |
 | 网站频繁要求验证、风控 | 出口 IP 在 IPv4 和 IPv6、不同服务器之间漂移 | 走代理的流量始终从同一台服务器、同一个 IPv4 出去 |
 | 换了节点，有些东西还走旧线路 | DNS、规则集下载各有各的出口 | 代理流量、远程 DNS、规则集下载共用一个 `proxy` 出口，换节点时一起换（[代理组](DESIGN.md#6-代理组)） |
-| 一开全局，家里的 NAS、公司内网就连不上 | 局域网和内网流量也被送进了代理 | 局域网在任何模式下直连；在外面用内置的 Tailscale 连回 tailnet，分域 DNS 拿到内网地址（[Tailscale](DESIGN.md#4-tailscale)） |
+| 一开全局，家里的 NAS、公司内网就连不上 | 局域网和内网流量也被送进了代理 | 局域网在任何模式下直连；在外面用内置的 Tailscale 连回 tailnet，内网域名交给 tailnet 的 DNS 拿到内网地址（[Tailscale](DESIGN.md#4-tailscale)） |
 
 每条策略都在日常使用中实测过，生成的配置在 Linux、macOS、Windows 上用官方 `sing-box check` 检查过。完整的设计理由见 [DESIGN.md](DESIGN.md)。
 
@@ -75,8 +75,8 @@ npx skills add riverscn/singbox-confgen --skill sing-box-best-practice -g -a cla
 |---|---|
 | 节点 | 用 JSON 编写（可写注释），从协议模板开始：Hysteria2、VLESS（Vision / Reality）、VMess、Trojan、Shadowsocks、ShadowTLS、TUIC、AnyTLS、Hysteria、NaiveProxy、Snell、SOCKS、HTTP、SSH、Tor，以及 WireGuard、OpenConnect、OpenVPN 端点 |
 | 代理组 | 按地区、用途给节点分组：手动选择或自动测速，可嵌套；成员可按名称筛选后一次选中；`proxy` 的默认选择；节点多时可不在 `proxy` 里逐个列出 |
-| 分流 | 默认模式；直连域名；代理域名和 IP（适合被墙但不在 gfwlist 里的网站）；DNS 分流（指定域名用本地 DNS、代理 DNS 或自定义的 DNS 服务器解析，例如经 WireGuard、OpenConnect 连公司时，公司域名问内网 DNS；tailnet 的内网域名用 Tailscale 卡片里的分域 DNS） |
-| Tailscale | 任意多个 tailnet：端点用 JSON 编写（可写注释）；MagicDNS、tailnet 默认 DNS、分域 DNS、额外路由、作为代理出口 |
+| 分流 | 默认模式；直连域名；代理域名和 IP（适合被墙但不在 gfwlist 里的网站）；DNS 分流（指定域名用本地 DNS、代理 DNS、某个 tailnet 的 DNS 或自定义的 DNS 服务器解析，例如公司域名问 tailnet 的全局 DNS，或经 WireGuard、OpenConnect 问内网 DNS） |
+| Tailscale | 任意多个 tailnet：端点用 JSON 编写（可写注释）；MagicDNS（含后台配置的 split DNS）、tailnet 默认 DNS、额外路由、作为代理出口 |
 | 高级 | 目标平台；代理 DNS 服务器（Google / Cloudflare / Quad9，DoT 或 DoH，或用 JSON 自定义任意 DNS 服务器）；ECS；Clash API；Steam、禁止 iCloud 使用 QUIC |
 
 ## 开发

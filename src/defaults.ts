@@ -65,7 +65,6 @@ export function newTailnet(partial: Partial<Tailnet> = {}): Tailnet {
     endpoint: TAILSCALE_ENDPOINT_TEMPLATE,
     magicDns: true,
     acceptDefaultResolvers: false,
-    dnsDomains: [],
     routes: [],
     asProxy: false,
     exitNode: "",
@@ -79,7 +78,7 @@ export function newRule(partial: Partial<RouteRule> = {}): RouteRule {
 
 export const DNS_RULE_TEMPLATE = `{
   // 内网 DNS 服务器，例如经 WireGuard、OpenConnect、OpenVPN 连到的公司内网
-  // tailnet 里的域名不用写在这里，用 Tailscale 页的「分域 DNS」
+  // 要交给 tailnet 的 DNS，服务器选「tailnet 的 DNS」，不用写在这里
   // 经哪个节点访问：填 VPN 节点的标签；不写就直连访问
   // "detour": "wg",
   "type": "udp",
@@ -89,7 +88,7 @@ export const DNS_RULE_TEMPLATE = `{
 }`;
 
 export function newDnsRule(partial: Partial<DnsRule> = {}): DnsRule {
-  return { id: uid(), server: "custom", custom: DNS_RULE_TEMPLATE, lines: [], ...partial };
+  return { id: uid(), server: "custom", tailnet: "", custom: DNS_RULE_TEMPLATE, lines: [], ...partial };
 }
 
 export function newGroup(partial: Partial<ProxyGroup> = {}): ProxyGroup {

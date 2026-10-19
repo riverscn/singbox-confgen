@@ -12,7 +12,7 @@ const schema = JSON.parse(readFileSync(new URL("./fixtures/sing-box-1.14.3.schem
 const validate = new Ajv2020({ strict: false, allErrors: true }).compile(schema);
 
 describe("importing an existing sing-box config", () => {
-  const { nodes, tailnets, notes } = importSingBoxConfig(baselineText);
+  const { nodes, tailnets, dnsRules, notes } = importSingBoxConfig(baselineText);
 
   it("takes the proxy nodes, in order, and keeps them in the groups they were in", () => {
     expect(nodes.map((n) => n.tag)).toEqual(["us-la-99-hy2", "us-la-99-vless", "us-la3-zgo-hy2", "us-la3-zgo-vless"]);
@@ -33,7 +33,7 @@ describe("importing an existing sing-box config", () => {
     expect(home.magicDns && work.magicDns).toBe(true);
     expect(home.acceptDefaultResolvers).toBe(false);
     expect(work.acceptDefaultResolvers).toBe(true);
-    expect(work.dnsDomains).toEqual(["corp.example.com"]);
+    expect(dnsRules?.map((r) => [r.server, r.tailnet, r.lines])).toEqual([["tailnet", work.id, ["corp.example.com"]]]);
     expect(JSON.parse(work.endpoint)).toMatchObject({ hostname: "my-mac-2", accept_routes: true });
     expect(JSON.parse(work.endpoint).type).toBeUndefined();
     // The exit node moves into its own field; no group offers the endpoint, so it stays out of proxy.
@@ -65,7 +65,14 @@ describe("importing an existing sing-box config", () => {
       ...profile,
       nodes: imported.nodes,
       groups: imported.groups,
-      settings: { ...profile.settings, tailnets: imported.tailnets, proxyDefault, rules },
+      // DNS rules to a tailnet come with the import; the others are ours.
+      settings: {
+        ...profile.settings,
+        tailnets: imported.tailnets,
+        proxyDefault,
+        rules,
+        dnsRules: [...(imported.dnsRules ?? []), ...profile.settings.dnsRules.filter((r) => r.server !== "tailnet")],
+      },
     }) as any;
     expect(normalize(rebuilt.outbounds)).toEqual(normalize(config.outbounds));
     expect(normalize(rebuilt.endpoints)).toEqual(normalize(config.endpoints));

@@ -26,14 +26,24 @@ export function normalizeProfile(raw: unknown): Profile {
 
 function normalizeSettings(raw: Record<string, unknown>): Profile["settings"] {
   const base = defaultSettings();
-  const tailnets = Array.isArray(raw.tailnets) ? (raw.tailnets as Partial<Tailnet>[]) : [];
+  const rawTailnets = Array.isArray(raw.tailnets) ? (raw.tailnets as (Partial<Tailnet> & { dnsDomains?: unknown })[]) : [];
+  // A tailnet's split-DNS domains used to live on the tailnet; they are now DNS rules to its DNS,
+  // ahead of the others as they used to be.
+  const moved: DnsRule[] = [];
+  const tailnets = rawTailnets.map(({ dnsDomains, ...rest }) => {
+    const t = newTailnet(rest);
+    const lines = Array.isArray(dnsDomains) ? dnsDomains.filter((l): l is string => typeof l === "string") : [];
+    if (lines.some((l) => l.trim())) moved.push(newDnsRule({ server: "tailnet", tailnet: t.id, lines }));
+    return t;
+  });
+  const dnsRules = Array.isArray(raw.dnsRules) ? (raw.dnsRules as Partial<DnsRule>[]).map((r) => newDnsRule(r)) : [];
   return {
     ...base,
     ...raw,
     remoteDns: { ...base.remoteDns, ...((raw.remoteDns as object) ?? {}) },
-    tailnets: tailnets.map((t) => newTailnet(t)),
+    tailnets,
     rules: Array.isArray(raw.rules) ? (raw.rules as Partial<RouteRule>[]).map((r) => newRule(r)) : [],
-    dnsRules: Array.isArray(raw.dnsRules) ? (raw.dnsRules as Partial<DnsRule>[]).map((r) => newDnsRule(r)) : [],
+    dnsRules: [...moved, ...dnsRules],
   } as Profile["settings"];
 }
 

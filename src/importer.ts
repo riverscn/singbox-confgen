@@ -1,13 +1,14 @@
 // Import nodes and Tailscale tailnets from an existing sing-box config (any version close to
 // 1.14, including SFM's re-saved form), or nodes and groups from a Clash one (src/clash.ts).
-// Everything else in it (DNS, routing) is left out: the generator's own policy replaces it.
+// Everything else in it (DNS, routing) is left out: the generator's own policy replaces it. The
+// exception is domains sent to a tailnet's DNS, which become DNS rules to that tailnet.
 
 import { importClashConfig, isClashConfig } from "./clash";
 import { parseJsonc } from "./generate";
 import { decodeBase64, importShareLinks, importSip008, isSip008, shareLinks } from "./subscription";
-import { newGroup, newNode, newTailnet } from "./defaults";
+import { newDnsRule, newGroup, newNode, newTailnet } from "./defaults";
 import { ENDPOINT_TYPES, NODE_TYPES } from "./templates";
-import type { ProxyGroup, ProxyNode, Tailnet } from "./types";
+import type { DnsRule, ProxyGroup, ProxyNode, Tailnet } from "./types";
 
 type Json = Record<string, any>;
 
@@ -15,6 +16,8 @@ export interface ImportResult {
   nodes: ProxyNode[];
   tailnets: Tailnet[];
   groups: ProxyGroup[];
+  /** Domains sent to a tailnet's DNS (split DNS), by tailnet id. */
+  dnsRules?: DnsRule[];
   /** Things the user should know were left out or changed. */
   notes: string[];
 }
@@ -152,6 +155,7 @@ export function importSingBoxConfig(text: string): ImportResult {
   const grouped = new Set((entry.length ? entry : groups).flatMap((g) => list(g.outbounds)));
 
   // ---- Tailscale ----
+  const dnsRulesOut: DnsRule[] = [];
   const tailnets: Tailnet[] = endpoints
     .filter((e) => e.type === "tailscale")
     .map((e) => {
@@ -166,18 +170,19 @@ export function importSingBoxConfig(text: string): ImportResult {
       const routes = routeRules
         .filter((r) => r.outbound === tag && !r.preferred_by && (domainLines(r).length || r.ip_cidr))
         .flatMap((r) => [...domainLines(r), ...list(r.ip_cidr)]);
-      return newTailnet({
+      const tailnet = newTailnet({
         tag,
         endpoint: pretty(body),
         magicDns,
         acceptDefaultResolvers: !!server?.accept_default_resolvers,
-        dnsDomains,
         routes,
         // Only a selector offering the endpoint makes it a proxy choice; an exit node alone
         // doesn't, since the source may reach the endpoint only through its own routes.
         asProxy: grouped.has(tag),
         exitNode: typeof exit_node === "string" ? exit_node : "",
       });
+      if (dnsDomains.length) dnsRulesOut.push(newDnsRule({ server: "tailnet", tailnet: tailnet.id, lines: dnsDomains }));
+      return tailnet;
     });
   const tailnetDns = new Set(dnsServers.filter((s) => s.type === "tailscale").map((s) => s.tag));
 
@@ -242,7 +247,7 @@ export function importSingBoxConfig(text: string): ImportResult {
     else notes.push(`代理组「${g.tag}」没有可导入的成员，已跳过`);
   });
   if (droppedMembers.size) notes.push(`代理组里引用的 ${[...droppedMembers].join("、")} 不是可导入的节点，已从组中去掉`);
-  return { nodes, tailnets, groups: kept, notes };
+  return { nodes, tailnets, groups: kept, dnsRules: dnsRulesOut, notes };
 }
 
 /** Outbound tags the generator always emits. */
@@ -252,6 +257,7 @@ export interface FittedImport {
   nodes: ProxyNode[];
   tailnets: Tailnet[];
   groups: ProxyGroup[];
+  dnsRules: DnsRule[];
   /** `old → new` for each renamed tag. */
   renamed: string[];
 }
@@ -285,6 +291,8 @@ export function fitImport(result: ImportResult): FittedImport {
     nodes: nodes.map((n) => ({ ...n, body: follow(n.body) })),
     tailnets: tailnets.map((t) => ({ ...t, endpoint: follow(t.endpoint) })),
     groups,
+    // They point at tailnets by id, so renamed tags don't matter.
+    dnsRules: result.dnsRules ?? [],
     renamed: [...renames].map(([from, to]) => `${from} → ${to}`),
   };
 }

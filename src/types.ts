@@ -23,8 +23,6 @@ export interface Tailnet {
   magicDns: boolean;
   /** Also use the tailnet's default (global) resolvers for names routed to it. */
   acceptDefaultResolvers: boolean;
-  /** Lines as entered: extra domain suffixes resolved by this tailnet's DNS (split DNS). */
-  dnsDomains: string[];
   /** Lines as entered: extra domains or IP prefixes routed through this tailnet. */
   routes: string[];
   /** Offer the endpoint as a choice in the `proxy` selector (e.g. to use an exit node). */
@@ -41,12 +39,14 @@ export interface RouteRule {
   lines: string[];
 }
 
-export type DnsRuleServer = "local" | "remote" | "custom";
+export type DnsRuleServer = "local" | "remote" | "tailnet" | "custom";
 
 export interface DnsRule {
   id: string;
-  /** local: the network's resolver; remote: the proxy DNS; custom: the JSON below. */
+  /** local: the network's resolver; remote: the proxy DNS; tailnet: that tailnet's DNS; custom: the JSON below. */
   server: DnsRuleServer;
+  /** Id of the tailnet whose DNS is used when server is "tailnet". */
+  tailnet: string;
   /** DNS server body as JSON with comments, used when server is "custom". */
   custom: string;
   /** Lines as entered: domains resolved by this server. */

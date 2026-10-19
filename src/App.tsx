@@ -1073,6 +1073,7 @@ function DnsRuleCard(props: {
   index: number;
   /** The proxy DNS as it reads in prose, e.g. "Google DoT". */
   remoteName: string;
+  tailnets: Tailnet[];
   issues: Issue[];
   expanded: boolean;
   onToggle: () => void;
@@ -1085,13 +1086,24 @@ function DnsRuleCard(props: {
   const entries = r.lines.map((l) => l.replace(/(^|\s)#.*/, "").trim()).filter(Boolean);
   const name = `DNS 规则 ${props.index + 1}`;
   const { server } = r.server === "custom" ? customDnsServer(r.custom, dnsRuleTag(props.index), null) : {};
-  const serverName =
-    r.server === "local" ? "本地 DNS" : r.server === "remote" ? "代理 DNS" : server ? `${server.type}://${String(server.server)}` : "自定义（有错误）";
-  const options: { value: DnsRuleServer; label: string }[] = [
+  const tailnet = r.server === "tailnet" ? props.tailnets.find((t) => t.id === r.tailnet) : undefined;
+  const serverName = {
+    local: "本地 DNS",
+    remote: "代理 DNS",
+    tailnet: tailnet ? `${tailnet.tag}-dns` : "未选择 tailnet",
+    custom: server ? `${server.type}://${String(server.server)}` : "自定义（有错误）",
+  }[r.server];
+  // A tailnet choice is "tailnet:<id>" in the select.
+  const value = r.server === "tailnet" ? `tailnet:${r.tailnet}` : r.server;
+  const options: { value: string; label: string }[] = [
     { value: "local", label: "本地 DNS（当前网络下发的）" },
     { value: "remote", label: `代理 DNS（${props.remoteName}，经 proxy）` },
+    ...props.tailnets.map((t) => ({ value: `tailnet:${t.id}`, label: `tailnet「${t.tag || "未命名"}」的 DNS` })),
+    ...(r.server === "tailnet" && !tailnet ? [{ value, label: r.tailnet ? "（tailnet 已删除，请重新选择）" : "请选择…" }] : []),
     { value: "custom", label: "自定义…" },
   ];
+  const choose = (v: string) =>
+    set(v.startsWith("tailnet:") ? { server: "tailnet", tailnet: v.slice("tailnet:".length) } : { server: v as DnsRuleServer });
   return (
     <ItemCard
       id={r.id}
@@ -1119,7 +1131,7 @@ function DnsRuleCard(props: {
     >
       <IssueList issues={props.issues} />
       <FormField label="DNS 服务器" hint="匹配的域名用它解析">
-        {(id) => <SimpleSelect id={id} value={r.server} options={options} onChange={(server) => set({ server })} className="sm:w-1/2" />}
+        {(id) => <SimpleSelect id={id} value={value} options={options} onChange={choose} className="sm:w-1/2" />}
       </FormField>
       {r.server === "custom" && (
         <FormField
@@ -1139,6 +1151,8 @@ function DnsRuleCard(props: {
 
 function TailnetCard(props: {
   tailnet: Tailnet;
+  /** How many DNS rules send domains to this tailnet's DNS. */
+  dnsRuleCount: number;
   issues: Issue[];
   expanded: boolean;
   onToggle: () => void;
@@ -1159,7 +1173,7 @@ function TailnetCard(props: {
       meta={
         <span className="font-mono">
           tailscale{host && ` · ${host}`}
-          {(t.magicDns || t.dnsDomains.some((l) => l.trim())) && ` · dns: ${t.tag}-dns`}
+          {(t.magicDns || props.dnsRuleCount > 0) && ` · dns: ${t.tag}-dns`}
         </span>
       }
       badges={
@@ -1185,24 +1199,18 @@ function TailnetCard(props: {
         checked={t.magicDns}
         onChange={(magicDns) => set({ magicDns })}
         title="MagicDNS"
-        description="tailnet 设备名和 tailnet 下发的 DNS 路由后缀交给它解析"
+        description="tailnet 设备名，以及 tailnet 管理后台配置的 split DNS 域名，自动交给它解析"
       />
       <ToggleRow
         checked={t.acceptDefaultResolvers}
         onChange={(acceptDefaultResolvers) => set({ acceptDefaultResolvers })}
         title="使用 tailnet 的默认 DNS 服务器"
-        description="交给它的域名不在 MagicDNS 里时，用 tailnet 配置的全局 DNS 解析"
+        description="在「分流」页的 DNS 分流里交给这个 tailnet 的域名，不在 MagicDNS 和 split DNS 里时，用 tailnet 配置的全局 DNS 解析；不开时这些域名得到 NXDOMAIN"
       />
-      <FormField hintAbove label="分域 DNS" hint="交给这个 tailnet 解析的域名，例如公司内网域名，才能拿到内网地址">
-        {(id) => (
-          <ListEditor
-            id={id}
-            lines={t.dnsDomains}
-            onChange={(dnsDomains) => set({ dnsDomains })}
-            placeholder="corp.example.com"
-          />
-        )}
-      </FormField>
+      <p className="text-xs/relaxed text-muted-foreground">
+        后台没配 split DNS、但 tailnet 的全局 DNS 能解析的域名（例如公司内网域名），在「分流」页的 DNS 分流里添加规则，服务器选这个 tailnet 的 DNS。
+        {props.dnsRuleCount > 0 && ` 现有 ${props.dnsRuleCount} 条。`}
+      </p>
       <SubHeading>路由</SubHeading>
       <FormField hintAbove label="额外路由" hint="走这个 tailnet 的域名或 IP 段；tailnet 设备和已批准的子网路由会自动识别，不用填。指向 tailnet 之外的地址时，需要作为代理出口并填出口节点">
         {(id) => (
@@ -1928,7 +1936,7 @@ export default function App() {
   const importConfig = async (result: ImportResult, baseName: string, source: string) => {
     // Always a new profile of its own, never merged into one being edited: nothing there gets
     // renamed or doubled, and none of the template's examples come along.
-    const { nodes, tailnets, groups, renamed } = fitImport(result);
+    const { nodes, tailnets, groups, dnsRules, renamed } = fitImport(result);
     const name = uniqueName(baseName, store);
     const content = (
       <ImportSummary
@@ -1946,7 +1954,7 @@ export default function App() {
       confirmLabel: "新建",
     });
     if (!ok) return;
-    addProfile(name, { version: 2, nodes, groups, settings: { ...defaultSettings(), tailnets } });
+    addProfile(name, { version: 2, nodes, groups, settings: { ...defaultSettings(), tailnets, dnsRules } });
     setTab(nodes.length ? "nodes" : "tailscale");
     notify(`已新建「${name}」：${nodes.length} 个节点、${tailnets.length} 个 tailnet${groups.length ? `、${groups.length} 个代理组` : ""}`);
   };
@@ -2378,7 +2386,11 @@ export default function App() {
                   </Button>
                 </ListHead>
                 <Intro>
-                  让匹配的域名用指定的 DNS 服务器解析。主要用于不经 Tailscale 的 VPN：例如用「规则」把公司域名送进 WireGuard 或 OpenConnect 节点后，这些域名还要问公司内网的 DNS（detour 填该节点）才拿得到内网地址，否则会去问代理 DNS。tailnet 里的内网域名不用在这里写，用 Tailscale 页的「分域 DNS」。只改由谁解析，流量仍按上面的分流走；走代理的域名照样只给 IPv4。在所有模式下生效，排在 tailnet 分域 DNS 之后、其他 DNS 规则之前；多条规则从上到下第一条匹配的生效。
+                  让匹配的域名用指定的 DNS 服务器解析，拿到内网地址：
+                  <br />· 公司内网经 Tailscale：tailnet 后台配好的 split DNS 由 MagicDNS 自动处理，不用写；后台没配、但 tailnet 的全局 DNS 能解析的域名，服务器选「tailnet 的 DNS」，并在 Tailscale 页开启「使用 tailnet 的默认 DNS 服务器」。
+                  <br />· 公司内网经 WireGuard、OpenConnect 等节点：用「规则」把域名送进节点后，服务器选「自定义」，填内网 DNS，detour 填该节点；否则这些域名会去问代理 DNS。
+                  <br />
+                  只改由谁解析，流量仍按上面的分流走。在所有模式下生效，排在所有 DNS 规则最前；多条规则从上到下第一条匹配的生效。
                 </Intro>
                 {profile.settings.dnsRules.length === 0 && <Empty>还没有 DNS 规则。</Empty>}
                 {profile.settings.dnsRules.map((r, i) => (
@@ -2387,6 +2399,7 @@ export default function App() {
                     rule={r}
                     index={i}
                     remoteName={remoteDnsName(profile.settings)}
+                    tailnets={tailnets}
                     issues={issuesFor(r.id)}
                     expanded={expanded.has(r.id)}
                     onToggle={() => toggle(r.id)}
@@ -2415,6 +2428,7 @@ export default function App() {
                   <TailnetCard
                     key={t.id}
                     tailnet={t}
+                    dnsRuleCount={profile.settings.dnsRules.filter((r) => r.server === "tailnet" && r.tailnet === t.id).length}
                     issues={issuesFor(t.id)}
                     expanded={expanded.has(t.id)}
                     onToggle={() => toggle(t.id)}

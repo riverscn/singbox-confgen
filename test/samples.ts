@@ -56,7 +56,6 @@ function fullProfile(): Profile {
         endpoint: '{"state_directory":"ts-work","hostname":"b","accept_routes":true}',
         exitNode: "gw",
         acceptDefaultResolvers: true,
-        dnsDomains: ["corp.example.com", "domain_keyword:corp"],
         routes: ["10.20.0.0/16", "nas.example.com", "domain:nas.lan"],
         asProxy: true,
       }),
@@ -74,6 +73,7 @@ function fullProfile(): Profile {
     newRule({ outbound: c.id, lines: ["domain:api.example.net"] }),
   ];
   p.settings.dnsRules = [
+    newDnsRule({ server: "tailnet", tailnet: p.settings.tailnets[1].id, lines: ["corp.example.com", "domain_keyword:corp"] }),
     newDnsRule({ lines: ["corp.example.org", "domain_keyword:intra"] }),
     newDnsRule({ server: "remote", lines: ["domain:api.example.org"] }),
     newDnsRule({ custom: '{"type":"udp","server":"192.168.1.1"}', lines: [".", "lan", "home.arpa"] }),

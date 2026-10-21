@@ -103,7 +103,7 @@ DNS 分流里选择 tailnet 的 DNS 的规则：域名匹配 → `<标签>-dns`�
 - 开放的策略选项：走代理时使用的 DNS 服务器；以及按域名指定 DNS 服务器的 DNS 分流（见第 1 节），它只改解析者，IPv6 策略照旧。除了三家预设，还可以选“自定义”，用一段 JSON 写任意 sing-box DNS 服务器（tcp/udp/tls/https/quic/h3），生成器填写 `tag: remote`，没写 `detour` 时补上 `proxy`。JSON 有误时报错，并暂时改用 Google，保证配置仍能加载。
 - 导入：直接读现有的 sing-box 或 Clash 配置（不再有本工具自己的导入导出格式）。sing-box 配置只取节点（代理类出站和 WireGuard/OpenConnect/OpenVPN 端点）和 Tailscale（端点，及其 DNS 服务器的 MagicDNS、默认 DNS，额外路由，是否在代理组里；交给 tailnet DNS 的域名转成 DNS 分流规则）。DNS 和分流规则由本工具的策略生成。
   - 节点引用的 `domain_resolver` 如果在新配置里不存在（例如 `cn-dns`），会去掉并说明。
-  - 源配置有代理组时，不在任何组里的节点（例如 ShadowTLS 这种 detour 辅助节点）导入后也不加入代理组。
+  - 源配置有代理组时，不在任何组里的节点（例如 ShadowTLS 这种 detour 辅助节点）导入后也不加入默认代理组。
   - 总是新建一套配置，不并入正在编辑的配置；与本工具自带出站（`proxy`、`auto`、`direct`）重名的标签自动改名，detour 跟着改。
   - 测试：生成的配置再导入、再生成，节点、端点、DNS、路由规则完全一致；SFM 实际在用的配置也能正确导入。
   - 也能导入 Clash（mihomo）配置（YAML，或同样结构的 JSON，按内容自动识别）：`proxies` 逐个转换为等价的 sing-box 出站或端点，字段对照参考 Sub-Store 的 sing-box producer 和 xmdhs/clash2singbox。sing-box 表达不了的节点（ShadowsocksR、TUIC v4、xhttp 等传输、AmneziaWG、restls 等插件）跳过并列出；`shadow-tls` 插件拆成 ShadowTLS 辅助节点加 detour；`dialer-proxy` 指向节点时转为 `detour`，指向代理组时去掉并说明（这里的 detour 只接受节点）。
@@ -111,7 +111,7 @@ DNS 分流里选择 tailnet 的 DNS 的规则：域名匹配 → `<标签>-dns`�
   - Clash 的节点名和组名大多含中文、emoji 和空格，所以标签和组名只要求非空、首尾无空白、不含控制字符（sing-box 本身接受任意字符串）。
 - 支持全平台（Apple、Android、Linux、Windows）。
 - 节点用 JSON 编辑（可写注释），从协议模板开始，覆盖 1.14 可作为代理节点的全部 18 种协议：15 种出站，加上 WireGuard、OpenConnect、OpenVPN 三种端点（WireGuard 出站在 1.14 中只剩空壳，必须用端点）。
-  - 生成器只负责：填写 `tag`；`type` 为端点类型的放进 `endpoints`，其余放进 `outbounds`；没写 `domain_resolver` 时补上 `local`（节点服务器是直连访问的）；勾选“加入代理组”的节点进入 `proxy` 和 `auto`。
+  - 生成器只负责：填写 `tag`；`type` 为端点类型的放进 `endpoints`，其余放进 `outbounds`；没写 `domain_resolver` 时补上 `local`（节点服务器是直连访问的）；勾选“加入默认代理组”的节点进入 `proxy` 和 `auto`（这两个是本工具自带的默认代理组；用户代理组的成员另在代理组页设置，与这个开关无关）。
   - 校验：JSON 语法、`type` 是否支持、是否缺 `server`、密钥类字段是否为空、`server` 是否还是模板示例地址、`detour` 指向的节点是否存在。
   - 旧版用表单保存的 Hysteria2/VLESS 服务器，加载时自动转换为等价的 JSON 节点（测试验证转换后与蓝本逐字段一致）。
   - 代价：密码等敏感字段在 JSON 编辑框里是明文显示的，截图或共享屏幕时要注意。
@@ -124,10 +124,11 @@ DNS 分流里选择 tailnet 的 DNS 的规则：域名匹配 → `<标签>-dns`�
 ## 6. 代理组
 
 - 所有走代理的流量、远程 DNS、规则集下载只有一个入口：`proxy` 选择器。代理组只决定 `proxy` 最终用哪个节点，DNS 和分流规则完全不受影响，原有设计的正确性不变。
-- `proxy` 的选项依次是：`auto`（所有“加入代理组”的节点，自动测速）、用户的代理组、（可选）逐个节点、作为代理出口的 tailnet。默认选择可以是 `auto` 或任一代理组；节点多时可以不在 `proxy` 里逐个列出节点。
+- `proxy` 的选项依次是：`auto`（所有“加入默认代理组”的节点，自动测速）、用户的代理组、（可选）逐个节点、作为代理出口的 tailnet。默认选择可以是 `auto` 或任一代理组；节点多时可以不在 `proxy` 里逐个列出节点。
 - 用户代理组是 sing-box 的 `selector`（手动选择）或 `urltest`（自动测速），成员可以是节点、tailnet 或其他代理组。成员按 id 记录，节点改名不会失效；删除节点时会从各组中移除。成员按勾选先后排列，可以手动调整顺序（客户端按此顺序显示，手动选择组没设默认时用第一个）。不做按名称自动匹配：那不是 sing-box 原生能力，生成器实现会让配置和界面的对应关系变复杂。
+- 节点列表里，“不在代理组”标签只贴在既没加入默认代理组、也不是任何用户代理组成员的节点上（例如只作 detour 的辅助节点）。
 - 校验：空组（sing-box 会拒绝）、互相包含形成环、名称冲突、测速间隔和容差格式。
-- 导入时，源配置里除 `proxy`、`auto` 以外的 `selector`/`urltest` 也会导入；源配置有 `proxy`/`auto` 时，以它们判断哪些节点“加入代理组”。
+- 导入时，源配置里除 `proxy`、`auto` 以外的 `selector`/`urltest` 也会导入；源配置有 `proxy`/`auto` 时，以它们判断哪些节点“加入默认代理组”。
 - 实测和文档说明：组切换成员时，**sing-box 内部发起的连接（例如经 `proxy` 到远程 DNS 的 DoT 连接）总会被中断重建**，只有入站连接受 `interrupt_exist_connections` 控制。所以切换节点后，远程 DNS 会立即改走新节点。
 
 ## 界面

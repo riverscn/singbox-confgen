@@ -878,7 +878,7 @@ export function validate(profile: Profile): Issue[] {
   const nodeTags = new Set(profile.nodes.map((n) => n.tag));
   const tailnetTags = new Set(s.tailnets.map((t) => t.tag));
   if (profile.nodes.length === 0) err(NODES, "至少需要一个节点");
-  else if (!profile.nodes.some((n) => n.inGroups)) err(NODES, "至少要有一个节点加入代理组");
+  else if (!profile.nodes.some((n) => n.inGroups)) err(NODES, "至少要有一个节点加入默认代理组");
   for (const n of profile.nodes) {
     const at: Where = { section: "nodes", id: n.id, label: `节点「${n.tag || "(未命名)"}」` };
     if (!TAG_RE.test(n.tag)) err(at, "标签不能为空，首尾不能有空格");

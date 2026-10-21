@@ -164,7 +164,7 @@ export const TEMPLATES: NodeTemplate[] = [
     tagPrefix: "shadowtls",
     body: `{
   // ShadowTLS 只负责伪装，需要再加一个 Shadowsocks 节点，在其中写 "detour": "<本节点标签>"。
-  // 本节点通常不需要加入代理组。
+  // 本节点通常不需要加入默认代理组。
   "type": "shadowtls",
   "server": "server.example.com",
   "server_port": 443,

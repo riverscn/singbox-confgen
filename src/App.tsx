@@ -303,6 +303,8 @@ function NodeCard(props: {
   onChange: (n: ProxyNode) => void;
   onRemove: () => void;
   onDuplicate: () => void;
+  /** Whether a user group lists this node as a member. */
+  inUserGroup: boolean;
   sort: ReturnType<typeof useDragSort>;
 }) {
   const { node: n } = props;
@@ -328,7 +330,7 @@ function NodeCard(props: {
       badges={
         <>
           {endpoint && <Badge variant="secondary">端点</Badge>}
-          {!n.inGroups && <Badge variant="outline">不在代理组</Badge>}
+          {!n.inGroups && !props.inUserGroup && <Badge variant="outline">不在代理组</Badge>}
         </>
       }
       actions={
@@ -352,8 +354,8 @@ function NodeCard(props: {
       <ToggleRow
         checked={n.inGroups}
         onChange={(inGroups) => set({ inGroups })}
-        title="加入代理组"
-        description="出现在 proxy 选择器和 auto 自动测速中；只作为其他节点 detour 的可以关掉"
+        title="加入默认代理组"
+        description="出现在默认的 proxy 选择器和 auto 自动测速中；只作为其他节点 detour 的可以关掉。自建代理组的成员在「代理组」页设置，不受这个开关影响"
       />
     </ItemCard>
   );
@@ -1878,6 +1880,8 @@ export default function App() {
     ...profile.settings.tailnets.map((t) => ({ id: t.id, tag: t.tag, kind: "tailnet" as const, detail: "" })),
     ...profile.groups.map((g) => ({ id: g.id, tag: g.tag, kind: "代理组" as const, detail: g.type === "urltest" ? "自动测速" : "手动选择" })),
   ];
+  // A node a user group lists is in a proxy group even when it is left out of proxy and auto.
+  const groupedNodeIds = new Set(profile.groups.flatMap((g) => g.members));
   // Client lists, proxy and auto follow the node order.
   const nodeSort = useDragSort(
     profile.nodes.map((n) => n.id),
@@ -2280,6 +2284,7 @@ export default function App() {
                     }}
                     onRemove={() => removeNode(i)}
                     onDuplicate={() => duplicateNode(i)}
+                    inUserGroup={groupedNodeIds.has(n.id)}
                     sort={nodeSort}
                   />
                 ))}

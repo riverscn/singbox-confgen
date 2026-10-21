@@ -22,7 +22,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 
 | 网页里就能改 | 位置 |
 |---|---|
-| 节点（18 种协议）、是否加入代理组 | 节点 |
+| 节点（18 种协议）、是否加入默认代理组（`proxy`、`auto`） | 节点 |
 | 代理组（手动选择 / 自动测速，可嵌套）、`proxy` 的默认选择 | 代理组 |
 | 默认模式；直连域名/IP；代理域名/IP；“域名/IP → 指定节点或代理组”的规则 | 分流 |
 | Tailscale：MagicDNS、默认 DNS、额外路由、作为代理出口、出口节点 | Tailscale |

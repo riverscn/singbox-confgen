@@ -1013,7 +1013,7 @@ describe("nodes", () => {
 
   it("requires at least one node in the groups", () => {
     const msgs = validate(withNodes(newNode({ tag: "a", inGroups: false }))).map((i) => i.message);
-    expect(msgs).toContain("至少要有一个节点加入代理组");
+    expect(msgs).toContain("至少要有一个节点加入默认代理组");
   });
 });
 

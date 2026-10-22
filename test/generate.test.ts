@@ -4,7 +4,7 @@ import { generateConfig, jsonErrorOffset, nodeObject, parseDomainList, parseJson
 import { blueprintProfile, newDnsRule, newGroup, newNode, newRule, newTailnet } from "../src/defaults";
 import { normalizeProfile } from "../src/storage";
 import { TEMPLATES, NODE_TYPES } from "../src/templates";
-import type { Profile, Tailnet } from "../src/types";
+import type { Profile, RuleSetRef, Tailnet } from "../src/types";
 import { normalize } from "./normalize";
 import { walk, type Query } from "./dnswalk";
 import { filledBody } from "./samples";
@@ -702,7 +702,7 @@ describe("rules", () => {
       [setup(["a.example"], () => ""), "还没有选择出口"],
       [setup(["a.example"], () => "gone"), "已删除"],
       [Object.assign(setup(["a.example"], () => empty.id), { groups: [empty] }), "还是空的"],
-      [setup(["# nothing"]), "还没有填写域名或 IP"],
+      [setup(["# nothing"]), "还没有填写域名、IP 或规则集"],
     ];
     for (const [p, msg] of cases) {
       const cfg = gen(p);
@@ -739,6 +739,101 @@ describe("rules", () => {
   it("reports malformed entries", () => {
     const p = setup(["ok.example", "bad entry"]);
     expect(validate(p).find((i) => i.id === p.settings.rules[0].id)?.message).toBe("规则 1：域名或 IP 格式不正确：bad entry（一行只写一项，中间不能有空格）");
+  });
+});
+
+describe("rule-sets in rules", () => {
+  const ref = (source: string, content: RuleSetRef["content"] = "domain"): RuleSetRef => ({ source, content });
+  const setup = (ruleSets: RuleSetRef[], lines: string[] = []) => {
+    const p = blueprintProfile();
+    p.settings.rules = [newRule({ outbound: p.nodes[1].id, lines, ruleSets })];
+    return p;
+  };
+  const remote = (cfg: any, tag: string) => cfg.route.rule_set.find((r: any) => r.tag === tag);
+
+  it("turns SagerNet names into remote rule-sets, routed after the rule's own entries", () => {
+    const cfg = gen(setup([ref("geosite-openai"), ref("geoip-us")], ["claude.ai"]));
+    expect(remote(cfg, "geosite-openai")).toEqual({
+      type: "remote",
+      tag: "geosite-openai",
+      format: "binary",
+      url: "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs",
+      update_interval: "1d",
+    });
+    expect(remote(cfg, "geoip-us").url).toBe("https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-us.srs");
+    const rules = cfg.route.rules;
+    const own = rules.findIndex((r: any) => r.domain_suffix?.[0] === "claude.ai");
+    expect(rules[own + 1]).toEqual({ rule_set: ["geosite-openai", "geoip-us"], action: "route", outbound: "reality-1" });
+  });
+
+  it("takes the other ways of writing a name, and github.com links", () => {
+    for (const source of ["geosite:openai", "geosite-openai.srs", "Geosite-OpenAI", "https://github.com/SagerNet/sing-geosite/blob/rule-set/geosite-openai.srs"]) {
+      const cfg = gen(setup([ref(source)]));
+      expect(remote(cfg, "geosite-openai")?.url, source).toBe("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-openai.srs");
+    }
+    const cfg = gen(setup([ref("https://github.com/someone/rules/blob/main/ai.srs")]));
+    expect(remote(cfg, "ai").url).toBe("https://raw.githubusercontent.com/someone/rules/main/ai.srs");
+  });
+
+  it("works without entries of its own", () => {
+    const cfg = gen(setup([ref("geosite-netflix")]));
+    expect(cfg.route.rules).toContainEqual({ rule_set: "geosite-netflix", action: "route", outbound: "reality-1" });
+    expect(cfg.route.rule_set.some((r: any) => r.tag === "custom-rule-domains")).toBe(false);
+  });
+
+  it("names URL sets after the file, numbering clashes, and reads .json as source format", () => {
+    const p = setup([ref("https://a.example/list.srs"), ref("https://b.example/list.srs"), ref("https://c.example/x/geoip-cn.json", "ip")]);
+    p.settings.rules.push(newRule({ outbound: p.nodes[0].id, ruleSets: [ref("https://a.example/list.srs")] }));
+    const cfg = gen(p);
+    expect(remote(cfg, "list").url).toBe("https://a.example/list.srs");
+    expect(remote(cfg, "list-2").url).toBe("https://b.example/list.srs");
+    // Not the built-in geoip-cn: a different URL.
+    expect(remote(cfg, "geoip-cn-2")).toMatchObject({ url: "https://c.example/x/geoip-cn.json", format: "source" });
+    expect(cfg.route.rules).toContainEqual({ rule_set: "list", action: "route", outbound: "hy2-1" });
+    expect(cfg.route.rule_set.filter((r: any) => r.url === "https://a.example/list.srs")).toHaveLength(1);
+  });
+
+  it("reuses the generator's own sets instead of adding them twice", () => {
+    const cfg = gen(setup([ref("geoip-cn"), ref("geosite-geolocation-cn")]));
+    expect(cfg.route.rule_set.filter((r: any) => r.tag.startsWith("geoip-cn"))).toHaveLength(1);
+    expect(cfg.route.rules).toContainEqual({ rule_set: ["geoip-cn", "geosite-geolocation-cn"], action: "route", outbound: "reality-1" });
+  });
+
+  it("resolves domain sets remotely and IPv4-only; sets with IPs stay out of DNS", () => {
+    const cfg = gen(setup([ref("geosite-openai"), ref("geoip-us"), ref("https://x.example/mixed.srs", "ip")]));
+    const dns = cfg.dns.rules;
+    for (const mode of ["GFWList", "Non-CN", "Global"] as const) {
+      expect(walk(dns, { mode, qtype: "A", sets: ["geosite-openai"] }), mode).toEqual({ evaluated: [], final: "route:remote" });
+      expect(walk(dns, { mode, qtype: "AAAA", sets: ["geosite-openai"] }).final, mode).toBe("predefined:NOERROR");
+    }
+    expect(walk(dns, { mode: "Direct", qtype: "A", sets: ["geosite-openai"] }).final).toBe("route:local");
+    expect(JSON.stringify(dns)).not.toContain("geoip-us");
+    expect(JSON.stringify(dns)).not.toContain("mixed");
+  });
+
+  it("lets CN IPv6 in an IP set through to the rule's node", () => {
+    const p = setup([ref("geoip-cn")]);
+    expect(routeWalk(gen(p), { mode: "Non-CN", ip: "240e:1::1", cn: true, publicV6Iface: false })).toBe("route:reality-1");
+  });
+
+  it("reports names it cannot read and names SagerNet does not have", () => {
+    const p = setup([ref("openai"), ref("geosite-no-such-list"), ref("ftp://x.example/a.srs")]);
+    const msgs = validate(p).filter((i) => i.id === p.settings.rules[0].id).map((i) => i.message);
+    expect(msgs).toContain("规则 1：规则集写法不正确：openai（写成 geosite-openai）、ftp://x.example/a.srs（只支持 http 和 https 链接）");
+    expect(msgs.some((m) => m.includes("geosite-no-such-list") && m.includes("没有找到"))).toBe(true);
+    // The unknown name is still written: the bundled list may be older than the repository.
+    expect(remote(gen(p), "geosite-no-such-list")).toBeTruthy();
+    expect(validate(setup([ref("geoip-us")])).filter((i) => i.section === "routing")).toEqual([]);
+  });
+
+  it("loads rules saved before rule-sets existed", () => {
+    const p = normalizeProfile({ nodes: [], settings: { rules: [{ id: "r", outbound: "", lines: ["a.example"] }] } });
+    expect(p.settings.rules[0].ruleSets).toEqual([]);
+    const q = normalizeProfile({ nodes: [], settings: { rules: [{ ruleSets: [{ source: "geoip-us", content: "weird" }, 5] }] } });
+    expect(q.settings.rules[0].ruleSets).toEqual([{ source: "geoip-us", content: "domain" }]);
+    // "both" from before it was folded into "ip".
+    const r = normalizeProfile({ nodes: [], settings: { rules: [{ ruleSets: [{ source: "https://x.example/a.srs", content: "both" }] }] } });
+    expect(r.settings.rules[0].ruleSets[0].content).toBe("ip");
   });
 });
 

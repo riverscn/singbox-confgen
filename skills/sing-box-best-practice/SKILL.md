@@ -97,6 +97,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 | `custom-rule-domains` | 内联 | 只给 DNS 用：规则里的域名，按走代理解析 |
 | `custom-rule-ips` | 内联 | 只给 IPv6 拒绝规则用：规则里的 IP，放行 |
 | `custom-dns-domains` | 内联 | 只给 DNS 用：DNS 分流里的所有域名，套用 IPv6 策略 |
+| 规则引用的在线规则集（如 `geosite-openai`、`geoip-us`） | SagerNet 官方或任意链接 | 规则：单独一条 `rule_set → 出口`；只含域名的也进 DNS 的走代理判断，含 IP 的放行 IPv6 拒绝规则 |
 
 内联规则集为空时写成永不匹配的 `{"domain_regex": ["a^"]}`。
 

@@ -1,5 +1,6 @@
 import type { DnsRule, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RemoteDnsProvider, RouteRule, Settings, Tailnet } from "./types";
 import { ENDPOINT_TYPES, NEEDS_SERVER, NODE_TYPES, SECRET_FIELDS } from "./templates";
+import { resolveRuleSet, sagerNetUrl, type ResolvedRuleSet } from "./rule-sets";
 
 type Json = Record<string, unknown>;
 
@@ -283,22 +284,62 @@ export function tailnetEndpoint(t: Tailnet): { endpoint?: Json; error?: string }
 // ---------------------------------------------------------------------------
 // DNS
 
-/** A rule from the routing tab whose node or group exists, with its parsed entries. */
+/** A remote rule-set a rule refers to, with the tag it has in the config. */
+interface BuiltRuleSet extends ResolvedRuleSet {
+  tag: string;
+}
+
+/** A rule from the routing tab whose node or group exists, with its parsed entries and rule-sets. */
 interface BuiltRule {
   rule: RouteRule;
   tag: string;
   domains: DomainMatch;
   cidrs: string[];
+  sets: BuiltRuleSet[];
 }
 
-/** Rules with a usable outbound and at least one valid entry; the rest are left out (validate says why). */
+/** Remote rule-sets the generator adds on its own; a rule naming one of them reuses its tag. */
+const BUILT_IN_SETS: Record<string, string> = {
+  [sagerNetUrl("geoip", "cn")]: CN_IP,
+  [sagerNetUrl("geosite", "geolocation-cn")]: CN_SITE,
+  "https://raw.githubusercontent.com/Dreista/sing-box-rule-set-cn/rule-set/gfwlist.txt.srs": "gfwlist",
+};
+const GENERATOR_SET_TAGS = [...Object.values(BUILT_IN_SETS), "telegram-ip", ...CUSTOM_PROXY, CUSTOM_DIRECT, CUSTOM_DIRECT_IPS, RULE_DOMAINS, RULE_IPS, DNS_RULE_DOMAINS];
+
+/** Rules with a usable outbound and at least one valid entry or rule-set; the rest are left out (validate says why). */
 function builtRules(s: Settings, tags: Map<string, string>): BuiltRule[] {
+  // One tag per URL across all rules: the file name, numbered when two URLs share it.
+  const byUrl = new Map<string, string>(Object.entries(BUILT_IN_SETS));
+  const used = new Set(GENERATOR_SET_TAGS);
+  const tagFor = (r: ResolvedRuleSet) => {
+    let tag = byUrl.get(r.url);
+    if (!tag) {
+      tag = r.baseTag;
+      for (let i = 2; used.has(tag); i++) tag = `${r.baseTag}-${i}`;
+      used.add(tag);
+      byUrl.set(r.url, tag);
+    }
+    return tag;
+  };
   return s.rules.flatMap((rule) => {
     const tag = tags.get(rule.outbound);
+    if (!tag) return [];
     const { domains, cidrs } = parseRuleList(rule.lines.join("\n"));
-    return tag && matchCount(domains) + cidrs.length ? [{ rule, tag, domains, cidrs }] : [];
+    const sets: BuiltRuleSet[] = [];
+    for (const ref of rule.ruleSets) {
+      const r = resolveRuleSet(ref);
+      if ("problem" in r) continue;
+      const set = { ...r, tag: tagFor(r) };
+      if (!sets.some((x) => x.tag === set.tag)) sets.push(set);
+    }
+    return matchCount(domains) + cidrs.length + sets.length ? [{ rule, tag, domains, cidrs, sets }] : [];
   });
 }
+
+/** Tags of the rules' rule-sets holding this kind of entry, each once. */
+const ruleSetTags = (rules: BuiltRule[], content: (c: BuiltRuleSet["content"]) => boolean) => [
+  ...new Set(rules.flatMap((r) => r.sets.filter((x) => content(x.content)).map((x) => x.tag))),
+];
 
 /** The DNS server tag a DNS rule with its own server gets. */
 export const dnsRuleTag = (index: number) => `dns-rule-${index + 1}`;
@@ -329,17 +370,26 @@ function builtDnsRules(s: Settings): BuiltDnsRule[] {
   });
 }
 
-/** Rule-sets of domains always sent through a proxy (the proxy list, the rules), for DNS. */
+/**
+ * Rule-sets of domains always sent through a proxy (the proxy list, the rules), for DNS. Remote
+ * sets that may hold IP prefixes stay out: in a DNS rule those would be legacy address filters,
+ * which sing-box refuses next to `query_type`.
+ */
 function proxiedSets(s: Settings, rules: BuiltRule[]): string[] {
   return [
     ...(hasProxyDomains(s) ? ["gfwlist-custom-domains"] : []),
     ...(rules.some((r) => matchCount(r.domains)) ? [RULE_DOMAINS] : []),
+    ...ruleSetTags(rules, (c) => c === "domain"),
   ];
 }
 
 /** Rule-sets of IP prefixes listed to go through a proxy (the proxy list, the rules). */
 function listedIpSets(s: Settings, rules: BuiltRule[]): string[] {
-  return [...(proxyList(s).cidrs.length ? ["gfwlist-custom-ips"] : []), ...(rules.some((r) => r.cidrs.length) ? [RULE_IPS] : [])];
+  return [
+    ...(proxyList(s).cidrs.length ? ["gfwlist-custom-ips"] : []),
+    ...(rules.some((r) => r.cidrs.length) ? [RULE_IPS] : []),
+    ...ruleSetTags(rules, (c) => c !== "domain"),
+  ];
 }
 
 const oneOrList = (xs: string[]) => (xs.length === 1 ? xs[0] : xs);
@@ -551,12 +601,13 @@ function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
     { ip_is_private: true, action: "route", outbound: "direct" },
     { clash_mode: "Direct", action: "route", outbound: "direct" },
     and([{ clash_mode: "Global", invert: true }, { rule_set: oneOrList(directSets(s)) }], { action: "route", outbound: "direct" }),
-    ...rules.map((r) => ({
-      ...matchFields(r.domains),
-      ...(r.cidrs.length ? { ip_cidr: r.cidrs } : {}),
-      action: "route",
-      outbound: r.tag,
-    })),
+    // A rule's own entries, then its rule-sets: kept apart so a set is not merged into the entries' match.
+    ...rules.flatMap((r) => [
+      ...(matchCount(r.domains) + r.cidrs.length
+        ? [{ ...matchFields(r.domains), ...(r.cidrs.length ? { ip_cidr: r.cidrs } : {}), action: "route", outbound: r.tag }]
+        : []),
+      ...(r.sets.length ? [{ rule_set: oneOrList(r.sets.map((x) => x.tag)), action: "route", outbound: r.tag }] : []),
+    ]),
     ...(hasProxyRules(s) ? [{ rule_set: CUSTOM_PROXY, action: "route", outbound: "proxy" }] : []),
     and([{ clash_mode: "GFWList" }, { rule_set: gfwAll, invert: true }], { action: "route", outbound: "direct" }),
     and(
@@ -575,10 +626,10 @@ function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
   ];
 }
 
-const remoteRuleSet = (tag: string, url: string): Json => ({
+const remoteRuleSet = (tag: string, url: string, format = "binary"): Json => ({
   type: "remote",
   tag,
-  format: "binary",
+  format,
   url,
   update_interval: "1d",
 });
@@ -590,9 +641,11 @@ function ruleSets(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
   const { domains: direct, cidrs: directIps } = directList(s);
   const proxy = proxyList(s);
   return [
-    remoteRuleSet(CN_IP, "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"),
-    remoteRuleSet(CN_SITE, "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-cn.srs"),
-    remoteRuleSet("gfwlist", "https://raw.githubusercontent.com/Dreista/sing-box-rule-set-cn/rule-set/gfwlist.txt.srs"),
+    ...Object.entries(BUILT_IN_SETS).map(([url, tag]) => remoteRuleSet(tag, url)),
+    // The rules' own remote sets, downloaded like the ones above.
+    ...[...new Map(rules.flatMap((r) => r.sets).filter((x) => !BUILT_IN_SETS[x.url]).map((x) => [x.tag, x])).values()].map((x) =>
+      remoteRuleSet(x.tag, x.url, x.format),
+    ),
     {
       type: "inline",
       tag: "telegram-ip",
@@ -936,8 +989,15 @@ export function validate(profile: Profile): Issue[] {
     const group = profile.groups.find((g) => g.id === r.outbound);
     const node = profile.nodes.find((n) => n.id === r.outbound);
     const { domains, cidrs, invalid } = parseRuleList(r.lines.join("\n"));
+    const sets = r.ruleSets.map((x) => ({ ref: x, resolved: resolveRuleSet(x) }));
+    const badSets = sets.flatMap(({ ref, resolved }) => ("problem" in resolved ? [{ entry: ref.source.trim() || "(空)", reason: resolved.problem }] : []));
+    const unknown = sets.flatMap(({ resolved }) => ("sagerNet" in resolved && resolved.sagerNet && !resolved.sagerNet.known ? [resolved.baseTag] : []));
     if (invalid.length) err(at, `域名或 IP 格式不正确：${describeInvalid(invalid)}`);
-    else if (!matchCount(domains) && !cidrs.length) warn(at, "还没有填写域名或 IP，暂不写入配置");
+    if (badSets.length) err(at, `规则集写法不正确：${describeInvalid(badSets)}`);
+    if (unknown.length) warn(at, `SagerNet 规则集里没有找到 ${unknown.join("、")}，请核对名称；文件不存在时 sing-box 无法启动`);
+    if (!invalid.length && !matchCount(domains) && !cidrs.length && sets.length === badSets.length) {
+      warn(at, "还没有填写域名、IP 或规则集，暂不写入配置");
+    }
     if (!r.outbound) warn(at, "还没有选择出口，暂不写入配置");
     else if (!group && !node) warn(at, "出口的节点或代理组已删除，暂不写入配置");
     else if (node && nodeObject(node).error) warn(at, `节点「${node.tag}」的配置有错误，暂不写入配置`);

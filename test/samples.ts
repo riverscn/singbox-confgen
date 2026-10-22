@@ -71,6 +71,14 @@ function fullProfile(): Profile {
   p.settings.rules = [
     newRule({ outbound: fast.id, lines: ["openai.com", "domain_keyword:claude", "192.0.2.0/24"] }),
     newRule({ outbound: c.id, lines: ["domain:api.example.net"] }),
+    newRule({
+      outbound: d.id,
+      ruleSets: [
+        { source: "geosite-netflix", content: "domain" },
+        { source: "geoip-jp", content: "ip" },
+        { source: "https://rules.example/mixed.json", content: "ip" },
+      ],
+    }),
   ];
   p.settings.dnsRules = [
     newDnsRule({ server: "tailnet", tailnet: p.settings.tailnets[1].id, lines: ["corp.example.com", "domain_keyword:corp"] }),

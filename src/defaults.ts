@@ -73,7 +73,7 @@ export function newTailnet(partial: Partial<Tailnet> = {}): Tailnet {
 }
 
 export function newRule(partial: Partial<RouteRule> = {}): RouteRule {
-  return { id: uid(), outbound: "", lines: [], ...partial };
+  return { id: uid(), outbound: "", lines: [], ruleSets: [], ...partial };
 }
 
 export const DNS_RULE_TEMPLATE = `{

@@ -18,6 +18,8 @@ export interface Query {
   ruleDomain?: boolean;
   /** Listed in a DNS rule; the walk reports its server as `dns-rule`. */
   dnsRule?: boolean;
+  /** Tags of the other rule-sets holding the domain (e.g. a rule's `geosite-openai`). */
+  sets?: string[];
   publicV6Iface?: boolean;
 }
 
@@ -57,7 +59,7 @@ function leaf(rule: Json, q: Query): Tri {
                     ? !!q.ruleDomain
                     : s === "custom-dns-domains"
                       ? !!q.dnsRule
-                      : false,
+                      : !!q.sets?.includes(s),
           ),
         );
         break;

@@ -31,12 +31,27 @@ export interface Tailnet {
   exitNode: string;
 }
 
+/**
+ * domain: domains only, also resolved through the remote DNS like the rule's own domains.
+ * ip: has IP prefixes (maybe domains too); routing only, as DNS rules cannot use such a set.
+ */
+export type RuleSetContent = "domain" | "ip";
+
+export interface RuleSetRef {
+  /** A SagerNet rule-set file name (`geosite-openai`, `geoip-us`) or the URL of any rule-set. */
+  source: string;
+  /** What a URL's rule-set holds; a SagerNet name implies it (geosite: domains, geoip: IPs). */
+  content: RuleSetContent;
+}
+
 export interface RouteRule {
   id: string;
   /** Id of the node or group that matching traffic goes through. */
   outbound: string;
   /** Lines as entered: domains or IP prefixes, in the same syntax as the other lists. */
   lines: string[];
+  /** Remote rule-sets whose matches also go through the outbound. */
+  ruleSets: RuleSetRef[];
 }
 
 export type DnsRuleServer = "local" | "remote" | "tailnet" | "custom";

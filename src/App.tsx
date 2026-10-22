@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
-import type { DnsRule, DnsRuleServer, Platform, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RouteRule, Settings, Tailnet } from "./types";
+import type { DnsRule, DnsRuleServer, Platform, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RouteRule, RuleSetContent, RuleSetRef, Settings, Tailnet } from "./types";
 import { TEMPLATES } from "./templates";
 import { REMOTE_DNS, customDnsServer, dnsRuleTag, generateConfig, nodeObject, proxyChoices, parseDomainList, parseRuleList, tailnetEndpoint, validate, type DomainMatch, type Issue } from "./generate";
 import { defaultSettings, freshTag, newDnsRule, newGroup, newNode, newRule, newTailnet, randomSecret } from "./defaults";
@@ -9,6 +9,8 @@ import { useDialogs } from "./dialog";
 import { CodeEditor } from "./code-editor";
 import { useDragSort } from "./drag-sort";
 import { copyText } from "./clipboard";
+import { POPULAR_RULE_SETS, RULE_SET_REPOS, canonicalSource, resolveRuleSet, ruleSetSourcePage, searchRuleSets } from "./rule-sets";
+import { RULE_SET_NAMES_DATE } from "./rule-set-names";
 import { ImportDialog } from "./import-dialog";
 import { changedLines, linePaths, type LineRange } from "./diff";
 import {
@@ -26,6 +28,7 @@ import {
   CopyPlus,
   Download,
   FolderCog,
+  ExternalLink,
   Eye,
   EyeOff,
   FileUp,
@@ -43,6 +46,7 @@ import {
   TriangleAlert,
   Waypoints,
   WrapText,
+  X,
   Zap,
 } from "lucide-react";
 import { cn } from "cn";
@@ -119,6 +123,8 @@ function SimpleSelect<T extends string>(props: {
   options: { value: T; label: string }[];
   onChange: (v: T) => void;
   className?: string;
+  /** For the popup, e.g. to let it be narrower than its default minimum. */
+  contentClassName?: string;
   ariaLabel?: string;
 }) {
   return (
@@ -126,7 +132,7 @@ function SimpleSelect<T extends string>(props: {
       <SelectTrigger id={props.id} className={cn("w-full", props.className)} aria-label={props.ariaLabel}>
         <SelectValue />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent className={props.contentClassName}>
         {props.options.map((o) => (
           <SelectItem key={o.value} value={o.value}>
             {o.label}
@@ -1021,7 +1027,10 @@ function RuleCard(props: {
   const { rule: r } = props;
   const set = (patch: Partial<RouteRule>) => props.onChange({ ...r, ...patch });
   const target = props.targets.find((c) => c.id === r.outbound);
-  const entries = r.lines.map((l) => l.replace(/(^|\s)#.*/, "").trim()).filter(Boolean);
+  const entries = [
+    ...r.lines.map((l) => l.replace(/(^|\s)#.*/, "").trim()).filter(Boolean),
+    ...r.ruleSets.map((x) => canonicalSource(x.source)).filter(Boolean),
+  ];
   const name = `规则 ${props.index + 1}`;
   return (
     <ItemCard
@@ -1039,7 +1048,7 @@ function RuleCard(props: {
       }
       meta={
         <span className="font-mono">
-          {entries.length ? `${entries.slice(0, 3).join("、")}${entries.length > 3 ? ` 等 ${entries.length} 项` : ""}` : "还没有域名或 IP"}
+          {entries.length ? `${entries.slice(0, 3).join("、")}${entries.length > 3 ? ` 等 ${entries.length} 项` : ""}` : "还没有域名、IP 或规则集"}
         </span>
       }
       actions={
@@ -1066,7 +1075,223 @@ function RuleCard(props: {
       <FormField label="域名和 IP">
         {(id) => <ListEditor id={id} lines={r.lines} onChange={(lines) => set({ lines })} placeholder={"openai.com\nanthropic.com"} allowIp />}
       </FormField>
+      <FormField label="规则集" hint="在线规则集里的域名和 IP 也走这个出口，适合整类网站，例如某个服务的全部域名，或某个国家的 IP" hintAbove>
+        {(id) => <RuleSetEditor id={id} refs={r.ruleSets} onChange={(ruleSets) => set({ ruleSets })} />}
+      </FormField>
     </ItemCard>
+  );
+}
+
+const RULE_SET_CONTENT: { value: RuleSetContent; label: string }[] = [
+  { value: "domain", label: "只有域名" },
+  { value: "ip", label: "含 IP" },
+];
+
+/** A link that opens in a new tab, styled like the other inline links. */
+function OutLink(props: { href: string; children: ReactNode }) {
+  return (
+    <a href={props.href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-foreground underline underline-offset-2">
+      {props.children}
+      <ExternalLink className="size-3" aria-hidden />
+    </a>
+  );
+}
+
+/**
+ * A rule's remote rule-sets: the chosen ones as rows, and a search box over the bundled SagerNet
+ * names that also takes a pasted URL. Popular sets are a click away while the box is empty.
+ */
+function RuleSetEditor(props: { id?: string; refs: RuleSetRef[]; onChange: (refs: RuleSetRef[]) => void }) {
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  const added = new Set(props.refs.map((r) => canonicalSource(r.source)));
+  const q = query.trim();
+  const typed = q ? canonicalSource(q) : "";
+  const isUrl = typed.includes("://");
+  const matches = isUrl ? [] : searchRuleSets(q);
+  // What the box itself would add, when it is not one of the matches: a URL, or a name the bundled list lacks.
+  const typedResolved = typed ? resolveRuleSet({ source: typed, content: "domain" }) : null;
+  const typedOption =
+    typedResolved && !("problem" in typedResolved) && !matches.some((m) => m.source === typed)
+      ? { source: typed, note: isUrl ? "添加这个链接" : "不在内置列表中，仍然添加" }
+      : null;
+  const options = [...matches.map((m) => ({ source: m.source, label: m.label, kind: m.kind === "geosite" ? "域名" : "IP" })), ...(typedOption ? [{ source: typedOption.source, label: typedOption.note, kind: isUrl ? "链接" : "" }] : [])];
+  const shown = open && q.length > 0;
+
+  const add = (source: string) => {
+    const canonical = canonicalSource(source);
+    if (!added.has(canonical)) {
+      // A URL's content is guessed from its file name; SagerNet names imply theirs.
+      const content: RuleSetContent = /geoip|[-_.]ip[-_.]|ipcidr|cidr/i.test(canonical.split("/").pop() ?? "") ? "ip" : "domain";
+      props.onChange([...props.refs, { source: canonical, content }]);
+    }
+    setQuery("");
+    setActive(0);
+  };
+  const set = (i: number, patch: Partial<RuleSetRef>) => props.onChange(props.refs.map((r, k) => (k === i ? { ...r, ...patch } : r)));
+  const remove = (i: number) => props.onChange(props.refs.filter((_, k) => k !== i));
+  const popular = POPULAR_RULE_SETS.filter((x) => !added.has(x));
+
+  return (
+    <div className="flex flex-col gap-2">
+      {props.refs.length > 0 && (
+        <ul className="flex flex-col divide-y rounded-md border text-xs" aria-label="已添加的规则集">
+          {props.refs.map((ref, i) => {
+            const r = resolveRuleSet(ref);
+            const problem = "problem" in r ? r.problem : null;
+            const sn = !("problem" in r) ? r.sagerNet : undefined;
+            const page = !("problem" in r) ? ruleSetSourcePage(r) : undefined;
+            return (
+              <li key={`${i}-${ref.source}`} className="flex flex-col gap-1 px-2.5 py-1.5">
+                <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="min-w-0 flex-1 truncate font-mono" title={ref.source}>
+                    {ref.source}
+                  </span>
+                  {sn ? (
+                    <Badge variant="secondary" title={`来自 ${RULE_SET_REPOS[sn.kind].repo}`}>
+                      {sn.kind === "geosite" ? "域名" : "IP"}
+                    </Badge>
+                  ) : (
+                    !problem && (
+                      <SimpleSelect
+                        value={ref.content}
+                        options={RULE_SET_CONTENT}
+                        onChange={(content) => set(i, { content })}
+                        className="h-7 w-24"
+                        contentClassName="min-w-0"
+                        ariaLabel={`${ref.source} 包含的内容`}
+                      />
+                    )
+                  )}
+                  <span className="flex shrink-0 items-center">
+                    {page && (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <a
+                              href={page}
+                              target="_blank"
+                              rel="noreferrer"
+                              aria-label={`查看 ${ref.source} 的内容`}
+                              className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "text-muted-foreground")}
+                            />
+                          }
+                        >
+                          <ExternalLink />
+                        </TooltipTrigger>
+                        <TooltipContent>{sn?.kind === "geosite" ? "查看包含的域名" : "在 GitHub 上查看"}</TooltipContent>
+                      </Tooltip>
+                    )}
+                    <IconAction label={`移除 ${ref.source}`} danger onClick={() => remove(i)}>
+                      <X />
+                    </IconAction>
+                  </span>
+                </div>
+                {problem && <p className="text-destructive">{problem}</p>}
+                {sn && !sn.known && (
+                  <p className="text-amber-800 dark:text-amber-300">内置列表（{RULE_SET_NAMES_DATE}）里没有这个名称，请到 GitHub 核对文件是否存在</p>
+                )}
+                {!sn && !problem && ref.content === "ip" && (
+                  <p className="text-muted-foreground">含 IP 的规则集只用于分流，不能放进 DNS 规则：其中若有域名，按模式选 DNS，不像「只有域名」那样固定用远程 DNS 解析</p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="relative">
+        <Search className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+        <Input
+          id={props.id}
+          role="combobox"
+          aria-expanded={shown}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={shown && options[active] ? `${listId}-${active}` : undefined}
+          className="pl-7 font-mono"
+          value={query}
+          placeholder="搜索 openai、netflix、美国…，或粘贴链接"
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(0);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              if (options.length) setActive((a) => (a + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length);
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              if (options[active]) add(options[active].source);
+            } else if (e.key === "Escape") {
+              setQuery("");
+            }
+          }}
+        />
+        {shown && (
+          <ul id={listId} role="listbox" className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-md bg-popover p-1 text-xs shadow-md ring-1 ring-foreground/10">
+            {options.map((o, i) => {
+              const isAdded = added.has(o.source);
+              return (
+                <li
+                  key={o.source}
+                  id={`${listId}-${i}`}
+                  role="option"
+                  aria-selected={i === active}
+                  aria-disabled={isAdded}
+                  // Keep focus in the box so the list stays open.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => setActive(i)}
+                  onClick={() => !isAdded && add(o.source)}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5",
+                    i === active && "bg-accent",
+                    isAdded && "cursor-default text-muted-foreground",
+                  )}
+                >
+                  <span className="min-w-0 truncate font-mono">{o.source}</span>
+                  {o.label && <span className="shrink-0 text-muted-foreground">{o.label}</span>}
+                  <span className="ml-auto shrink-0 text-muted-foreground">{isAdded ? <Check className="size-3.5" aria-label="已添加" /> : o.kind}</span>
+                </li>
+              );
+            })}
+            {!options.length && (
+              <li className="px-2 py-1.5 text-muted-foreground">
+                {typedResolved && "problem" in typedResolved ? typedResolved.problem : "没有匹配的规则集"}
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
+      {popular.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="text-muted-foreground">常用：</span>
+          {popular.map((x) => (
+            <button
+              key={x}
+              type="button"
+              onClick={() => add(x)}
+              className="inline-flex h-6 items-center gap-1 rounded-full border px-2 font-mono text-[11px] outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/30"
+            >
+              <Plus className="size-3" aria-hidden />
+              {x}
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="text-xs/relaxed text-muted-foreground">
+        填 SagerNet 规则集的文件名（去掉 <span className="font-mono">.srs</span>）：<span className="font-mono">geosite-</span>名称是一组网站的域名，
+        <span className="font-mono">geoip-</span>国家代码是该国家或地区的 IP。可以在 <OutLink href={RULE_SET_REPOS.geosite.browse}>sing-geosite</OutLink> 和{" "}
+        <OutLink href={RULE_SET_REPOS.geoip.browse}>sing-geoip</OutLink> 查阅全部文件，从 GitHub 复制的文件页面链接也能直接粘贴。其他来源的规则集粘贴链接（
+        <span className="font-mono">.srs</span> 或 <span className="font-mono">.json</span>），并选择它包含的内容。规则集经 <ProxyTerm /> 下载，每天更新。
+      </p>
+    </div>
   );
 }
 

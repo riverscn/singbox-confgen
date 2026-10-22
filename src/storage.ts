@@ -1,4 +1,4 @@
-import type { DnsRule, Profile, ProxyGroup, ProxyNode, RouteRule, Tailnet } from "./types";
+import type { DnsRule, Profile, ProxyGroup, ProxyNode, RouteRule, RuleSetRef, Tailnet } from "./types";
 import { legacyServersToNodes, type LegacyServer } from "./legacy";
 import { blueprintProfile, defaultSettings, newDnsRule, newGroup, newNode, newRule, newTailnet } from "./defaults";
 
@@ -42,9 +42,19 @@ function normalizeSettings(raw: Record<string, unknown>): Profile["settings"] {
     ...raw,
     remoteDns: { ...base.remoteDns, ...((raw.remoteDns as object) ?? {}) },
     tailnets,
-    rules: Array.isArray(raw.rules) ? (raw.rules as Partial<RouteRule>[]).map((r) => newRule(r)) : [],
+    rules: Array.isArray(raw.rules) ? (raw.rules as Partial<RouteRule>[]).map((r) => newRule({ ...r, ruleSets: ruleSetRefs(r.ruleSets) })) : [],
     dnsRules: [...moved, ...dnsRules],
   } as Profile["settings"];
+}
+
+/** Rule-set references as saved, without malformed entries (rules from before them have none). */
+function ruleSetRefs(raw: unknown): RuleSetRef[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((x) => {
+    const { source, content } = (x ?? {}) as Partial<RuleSetRef>;
+    if (typeof source !== "string") return [];
+    return [{ source, content: content === "ip" || content === ("both" as string) ? "ip" : "domain" }];
+  });
 }
 
 export interface SavedProfile {

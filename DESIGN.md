@@ -19,6 +19,14 @@
 
 规则：每条规则是一组域名/IP 加一个出口（任一节点或代理组），生成为一条 `route` 规则，指向该出口。除 Direct 外始终生效，位置在自定义直连之后、自定义代理之前，多条规则按列表顺序第一条匹配的生效。规则里的域名另放进 `custom-rule-domains`（只给 DNS 用），DNS 上和代理域名一样处理（远程解析、只给 A）；远程 DNS 仍经 `proxy` 访问，不经规则自己的出口。出口未选、已删除或是空代理组，或者没有有效条目时，这条规则不写入配置，并给出提醒。
 
+规则还可以引用在线规则集（`.srs`），整类网站或某个国家的 IP 一次写完：
+- 写法：SagerNet 的规则集直接填文件名，`geosite-openai` 对应 `SagerNet/sing-geosite` `rule-set` 分支的 `geosite-openai.srs`，`geoip-us` 对应 `sing-geoip` 的 `geoip-us.srs`；`geosite:openai`、带 `.srs` 的写法、raw 链接和 github.com 文件页面链接都换算成同一个名字。其他来源填链接（`.srs` 为 `binary`，`.json` 为 `source`），github.com 页面链接换成 raw 链接。
+- 编辑器内置两个仓库的文件名清单（`src/rule-set-names.ts`，由 `scripts/fetch-rule-set-names.py` 生成），用于搜索补全（geoip 也能按中文国名搜）和核对名称。清单里没有的名称仍写入配置，只给出提醒：清单可能比仓库旧，而文件不存在时 sing-box 无法启动。
+- 生成：每个链接一个 `remote` 规则集，`update_interval: 1d`，和内置规则集一样经 `rule-set-download`（即 `proxy`）下载。标签用文件名（`geosite-openai`、链接则去掉扩展名），重名时加序号；和生成器自带的 `geoip-cn`、`geosite-geolocation-cn`、`gfwlist` 同一链接时直接复用。规则集单独生成一条 `rule_set → 出口` 的路由规则，紧跟在这条规则自己的域名/IP 后面，不和它们合并成一条（sing-box 对只含一条默认规则的规则集会把字段并入外层规则，合并后语义难以预料）。
+- DNS：geosite（以及标成「只有域名」的链接）和规则里的域名一样放进远程解析、只给 A 的判断（`proxiedSets`）。geoip 和标成「含 IP」的链接不进 DNS 规则：DNS 规则里规则集的 `ip_cidr` 属于旧式地址过滤字段，sing-box 1.14 不允许它和 `query_type` 出现在同一份 DNS 配置里。所以含 IP 的规则集里如果也有域名，这些域名按模式解析，界面上会说明。
+- 链接的内容只分「只有域名」和「含 IP」两种：生成器离线运行、不下载规则集，看不到内容；而纯 IP 和混合的规则集生成结果完全相同，只有「是否只含域名」决定 DNS 怎么处理。添加时按文件名猜一个默认值（含 geoip、ip、cidr 的为「含 IP」）。
+- IPv6：IP 类规则集和规则里的 IP 段一样，放进拒绝国内 IPv6 那条规则的例外（`listedIpSets`），列出的地址照常交给规则的出口。
+
 DNS 分流：每条 DNS 规则是一组域名加一个 DNS 服务器（本地 DNS、代理 DNS、某个 tailnet 的 DNS，或用 JSON 自定义任意 sing-box DNS 服务器），匹配的域名交给它解析。按域名指定 DNS 只有这一处。
 - 不经 Tailscale 的 VPN：用「规则」把公司域名送进 WireGuard、OpenConnect、OpenVPN 节点后，这些域名默认按走代理处理，经 `proxy` 问远程 DNS，拿不到内网地址。DNS 规则让它们去问内网 DNS（自定义服务器），`detour` 填该 VPN 节点。
 - 经 Tailscale：tailnet 后台配置的 split DNS 已由 MagicDNS 处理（`preferred_by` 对 tailscale 服务器匹配 MagicDNS 设备名和 DNS 路由后缀），不用写。后台没配 split DNS、但 tailnet 的全局 DNS 能解析的域名（例如没有后台权限时的公司域名），服务器选「tailnet 的 DNS」，并开启该 tailnet 的「使用 tailnet 的默认 DNS 服务器」（`accept_default_resolvers`）。不开时，tailscale DNS 服务器对不属于 tailnet 的域名返回 NXDOMAIN（sing-box 文档），所以这种组合会给出提醒。用 tailnet 的 DNS 而不是自定义服务器加 `detour: <tailnet>`，是因为它跟着 tailnet 后台的 DNS 设置走，不用写死内网 DNS 的地址；自定义服务器的 `detour` 指向 tailnet 时也会提醒。

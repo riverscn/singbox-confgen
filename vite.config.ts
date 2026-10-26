@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig, type Plugin } from "vite";
+import { createServer, defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -26,9 +26,36 @@ const contentSecurityPolicy = (): Plugin => ({
   transformIndexHtml: () => [{ tag: "meta", attrs: { "http-equiv": "Content-Security-Policy", content: CSP }, injectTo: "head-prepend" }],
 });
 
+// Search engines that don't run JavaScript (Baidu, Sogou, 360) would see an empty #root: render the
+// app's first screen into index.html at build time. The app renders over it on load.
+const prerender = (): Plugin => ({
+  name: "prerender",
+  apply: "build",
+  async transformIndexHtml(html) {
+    const server = await createServer({
+      configFile: false,
+      root: __dirname,
+      appType: "custom",
+      logLevel: "error",
+      server: { middlewareMode: true, hmr: false },
+      resolve: { alias },
+    });
+    try {
+      const { render } = await server.ssrLoadModule("/src/prerender.tsx");
+      const root = '<div id="root"></div>';
+      if (!html.includes(root)) throw new Error(`prerender: ${root} not found in index.html`);
+      return html.replace(root, `<div id="root">${render()}</div>`);
+    } finally {
+      await server.close();
+    }
+  },
+});
+
+const alias = { "@": path.resolve(__dirname, "./src") };
+
 // Relative base so the built `dist/` works from any path or straight from disk-backed static hosting.
 export default defineConfig({
   base: "./",
-  plugins: [react(), tailwindcss(), contentSecurityPolicy()],
-  resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
+  plugins: [react(), tailwindcss(), contentSecurityPolicy(), prerender()],
+  resolve: { alias },
 });

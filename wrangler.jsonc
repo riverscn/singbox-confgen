@@ -7,8 +7,9 @@
   "compatibility_date": "2026-10-01",
   "assets": {
     "directory": "./dist",
-    // Single page: anything that isn't a file gets index.html.
-    "not_found_handling": "single-page-application"
+    // Paths that aren't files are a plain 404, not index.html: the app has no client-side routes,
+    // and serving the page at every path would make search engines see duplicates of it.
+    "not_found_handling": "none"
   },
   "workers_dev": true,
   "preview_urls": true,

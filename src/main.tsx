@@ -5,12 +5,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import "./index.css";
 import "./styles.css";
 
-// shadcn's dark theme is keyed on a `.dark` class; follow the system setting.
-const dark = window.matchMedia("(prefers-color-scheme: dark)");
-const applyTheme = () => document.documentElement.classList.toggle("dark", dark.matches);
-applyTheme();
-dark.addEventListener("change", applyTheme);
-
+// The dark theme is set by public/theme.js. In a build, #root already holds the prerendered first
+// screen (see vite.config.ts); rendering replaces it with the live app.
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <TooltipProvider delay={400}>

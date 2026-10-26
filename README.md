@@ -126,11 +126,11 @@ npm version 0.2.0 -m "Release %s"
 git push --follow-tags
 ```
 
-`dist/_headers` 来自 `public/_headers`，给所有响应加上 `frame-ancestors 'none'`、`nosniff` 等安全响应头；页面本身的 CSP 在构建时写进 `index.html`。本地可以用 `npx wrangler dev` 在 Workers 运行时里预览构建结果。
+`dist/_headers` 来自 `public/_headers`，给所有响应加上 `frame-ancestors 'none'`、`nosniff` 等安全响应头；页面本身的 CSP 在构建时写进 `index.html`。构建时还会把首屏预渲染进 `index.html`（`src/prerender.tsx`），不执行 JavaScript 的搜索引擎也能读到页面内容；`robots.txt`、`sitemap.xml` 和分享卡片图 `og.png` 在 `public/` 里。本地可以用 `npx wrangler dev` 在 Workers 运行时里预览构建结果。
 
 ## 自部署
 
-`npm run build` 后，把 `dist/` 放到任意静态托管（Nginx、Caddy、Cloudflare Pages、GitHub Pages 等）。资源用相对路径引用，挂在子路径下也能用。
+`npm run build` 后，把 `dist/` 放到任意静态托管（Nginx、Caddy、Cloudflare Pages、GitHub Pages 等）。资源用相对路径引用，挂在子路径下也能用。`index.html` 里的 canonical 和 `og:url` 指向官方站点；自部署且希望被搜索引擎收录时，改成你自己的地址。
 通过 http 访问时，浏览器可能禁用剪贴板 API，页面会自动退回旧的复制方式。
 
 ## 结构

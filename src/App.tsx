@@ -1897,6 +1897,9 @@ function ConfigPreview(props: {
   /** A deletion shows as a red line where the lines were, before row `i`. */
   const deletedBefore = (i: number) => props.ranges.some((r) => r.deleted && r.start === i);
   const deletedLine = <div aria-hidden className="relative z-10 -my-px h-0.5 bg-destructive" />;
+  // Prerendered at build time (no window): leave it empty. The default config holds a random Clash
+  // API secret, which would otherwise be the same for everyone and cached by search engines.
+  const lines = typeof window === "undefined" ? [] : props.lines;
   return (
     <pre
       ref={ref}
@@ -1905,7 +1908,7 @@ function ConfigPreview(props: {
       aria-label="生成的 config.json"
     >
       <div className={props.wrap ? undefined : "w-max min-w-full"}>
-        {props.lines.map((line, i) => (
+        {lines.map((line, i) => (
           <Fragment key={i}>
             {deletedBefore(i) && deletedLine}
             <div data-line={i} className={cn("px-3.5", shaded(i) && "bg-primary/[0.07] shadow-[inset_2px_0_0_var(--color-primary)]")}>
@@ -1913,7 +1916,7 @@ function ConfigPreview(props: {
             </div>
           </Fragment>
         ))}
-        {deletedBefore(props.lines.length) && deletedLine}
+        {deletedBefore(lines.length) && deletedLine}
       </div>
     </pre>
   );

@@ -11,7 +11,9 @@
     // and serving the page at every path would make search engines see duplicates of it.
     "not_found_handling": "none"
   },
-  "workers_dev": true,
+  // Production is served only on the custom domain, so search engines don't see a second copy at
+  // *.workers.dev. Preview URLs are set explicitly: they would otherwise follow workers_dev.
+  "workers_dev": false,
   "preview_urls": true,
   // Required by `wrangler preview`, which Workers Builds runs for non-main branches; empty means
   // a Preview uses the settings above.

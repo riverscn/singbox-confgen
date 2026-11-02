@@ -681,6 +681,78 @@ describe("rules", () => {
     expect(outs.indexOf("reality-1")).toBeLessThan(outs.indexOf("us"));
   });
 
+  it.each(["proxy", "auto", "direct"])("routes entries and rule-sets to the built-in %s outbound", (outbound) => {
+    const p = setup(["target.example", "203.0.113.0/24"], () => outbound);
+    p.settings.rules[0].ruleSets = [{ source: "geosite-openai", content: "domain" }];
+    const cfg = gen(p);
+    expect(cfg.route.rules).toContainEqual({ domain_suffix: ["target.example"], ip_cidr: ["203.0.113.0/24"], action: "route", outbound });
+    expect(cfg.route.rules).toContainEqual({ rule_set: "geosite-openai", action: "route", outbound });
+    expect(routeWalk(cfg, { mode: "Non-CN", ip: "203.0.113.8" })).toBe(`route:${outbound}`);
+    expect(validate(p).filter((i) => i.id === p.settings.rules[0].id)).toEqual([]);
+  });
+
+  it.each(["proxy", "auto"])("resolves domains routed through %s remotely and IPv4-only", (outbound) => {
+    const dns = gen(setup(["target.example"], () => outbound)).dns.rules;
+    for (const mode of ["GFWList", "Non-CN", "Global"] as const) {
+      expect(walk(dns, { mode, qtype: "A", ruleDomain: true }).final).toBe("route:remote");
+      for (const qtype of ["AAAA", "HTTPS", "SVCB"] as const) {
+        expect(walk(dns, { mode, qtype, ruleDomain: true }).final).toBe("predefined:NOERROR");
+      }
+    }
+  });
+
+  it("resolves direct rule domains and domain-only rule-sets locally, following the local IPv6 policy", () => {
+    const p = setup(["target.example"], () => "direct");
+    p.settings.rules[0].ruleSets = [{ source: "geosite-openai", content: "domain" }];
+    // The explicit rule wins over both the proxy list and the mode's proxy decisions.
+    p.settings.proxyRules.push("target.example");
+    const dns = gen(p).dns.rules;
+    for (const mode of ["Direct", "GFWList", "Non-CN", "Global"] as const) {
+      for (const match of [{ domain: "target.example", ruleDomain: true, customProxy: true }, { sets: ["geosite-openai"] }]) {
+        for (const publicV6Iface of [true, false]) {
+          for (const qtype of ["A", "AAAA", "HTTPS", "SVCB"] as const) {
+            expect(walk(dns, { mode, qtype, publicV6Iface, ...match }), `${mode} ${qtype} IPv6=${publicV6Iface}`).toEqual({
+              evaluated: [],
+              final: qtype === "AAAA" && !publicV6Iface ? "predefined:NOERROR" : "route:local",
+            });
+          }
+        }
+      }
+    }
+  });
+
+  it.each(["proxy", "auto", "node", "group"])("keeps direct and %s rules in order for both routing and DNS", (target) => {
+    const p = blueprintProfile();
+    const group = newGroup({ tag: "pick", members: [p.nodes[0].id] });
+    p.groups = [group];
+    const outbound = target === "node" ? p.nodes[0].id : target === "group" ? group.id : target;
+    const proxyRule = newRule({ outbound, lines: ["target.example", "203.0.113.0/24"], ruleSets: [{ source: "geosite-openai", content: "domain" }] });
+    const directRule = newRule({ outbound: "direct", lines: ["target.example", "203.0.113.0/24"], ruleSets: [{ source: "geosite-openai", content: "domain" }] });
+    for (const first of [proxyRule, directRule]) {
+      p.settings.rules = first === proxyRule ? [proxyRule, directRule] : [directRule, proxyRule];
+      const cfg = gen(p);
+      const tag = first === directRule ? "direct" : target === "node" ? p.nodes[0].tag : target === "group" ? group.tag : target;
+      expect(routeWalk(cfg, { mode: "Non-CN", ip: "203.0.113.8" })).toBe(`route:${tag}`);
+      for (const match of [{ domain: "target.example", ruleDomain: true }, { sets: ["geosite-openai"] }]) {
+        expect(walk(cfg.dns.rules, { mode: "Non-CN", qtype: "A", ...match }).final).toBe(first === directRule ? "route:local" : "route:remote");
+        expect(walk(cfg.dns.rules, { mode: "Non-CN", qtype: "HTTPS", ...match }).final).toBe(first === directRule ? "route:local" : "predefined:NOERROR");
+      }
+    }
+  });
+
+  it("keeps a chosen DNS server for direct rules and only suppresses AAAA without local IPv6", () => {
+    const p = setup(["dns-rule.test"], () => "direct");
+    p.settings.dnsRules = [newDnsRule({ server: "remote", lines: ["dns-rule.test"] })];
+    const dns = gen(p).dns.rules;
+    for (const publicV6Iface of [true, false]) {
+      for (const qtype of ["A", "AAAA", "HTTPS", "SVCB"] as const) {
+        expect(walk(dns, { mode: "Global", qtype, publicV6Iface, domain: "dns-rule.test", ruleDomain: true, dnsRule: true }).final).toBe(
+          qtype === "AAAA" && !publicV6Iface ? "predefined:NOERROR" : "route:remote",
+        );
+      }
+    }
+  });
+
   it("resolves rule domains remotely and IPv4-only, like the proxy list", () => {
     const dns = gen(setup(["openai.com"])).dns.rules;
     for (const mode of ["GFWList", "Non-CN", "Global"] as const) {
@@ -880,6 +952,26 @@ describe("rejecting direct CN IPv6 without local IPv6", () => {
     expect(where(p, "GFWList")).toBe("route:proxy");
     expect(where(p, "Non-CN")).toBe("route:proxy");
     expect(where(p, "Non-CN", { ...cnV6, ip: "240e:3000::1" })).toBe("reject");
+  });
+
+  it("still rejects CN IPv6 sent direct by a rule, including overlaps with the proxy list", () => {
+    const p = profile({ proxyRules: ["240e::/20"] });
+    p.settings.rules = [newRule({ outbound: "direct", lines: ["240e::/20"] })];
+    for (const mode of ["GFWList", "Non-CN", "Global"] as const) {
+      expect(where(p, mode)).toBe("reject");
+      expect(where(p, mode, { ...cnV6, publicV6Iface: true })).toBe("route:direct");
+    }
+    expect(where(p, "Direct")).toBe("route:direct");
+  });
+
+  it.each(["proxy", "auto"])("uses the first IP rule to decide whether CN IPv6 is direct or sent through %s", (outbound) => {
+    const p = profile();
+    const direct = newRule({ outbound: "direct", lines: ["240e::/20"] });
+    const proxied = newRule({ outbound, lines: ["240e::/20"] });
+    p.settings.rules = [proxied, direct];
+    expect(where(p, "Non-CN")).toBe(`route:${outbound}`);
+    p.settings.rules.reverse();
+    expect(where(p, "Non-CN")).toBe("reject");
   });
 
   it("leaves the rule as it was when no list has IP prefixes", () => {

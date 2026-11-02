@@ -32,7 +32,7 @@ export interface Tailnet {
 }
 
 /**
- * domain: domains only, also resolved through the remote DNS like the rule's own domains.
+ * domain: domains only, resolved like the rule's own domains (local for direct, remote otherwise).
  * ip: has IP prefixes (maybe domains too); routing only, as DNS rules cannot use such a set.
  */
 export type RuleSetContent = "domain" | "ip";
@@ -46,7 +46,7 @@ export interface RuleSetRef {
 
 export interface RouteRule {
   id: string;
-  /** Id of the node or group that matching traffic goes through. */
+  /** Built-in outbound tag (proxy, auto, direct), or id of the node or group that matching traffic goes through. */
   outbound: string;
   /** Lines as entered: domains or IP prefixes, in the same syntax as the other lists. */
   lines: string[];
@@ -86,7 +86,7 @@ export interface Settings {
   directDomains: string[];
   /** Lines as entered: domains or IP prefixes that always go through the proxy. */
   proxyRules: string[];
-  /** Traffic sent to a chosen node or group, checked in order after the direct list. */
+  /** Traffic sent to a built-in outbound, node or group, checked in order after the direct list. */
   rules: RouteRule[];
   /** Domains resolved by a chosen DNS server, checked in order before the other DNS rules. */
   dnsRules: DnsRule[];

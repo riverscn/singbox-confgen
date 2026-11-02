@@ -8,6 +8,8 @@ type Tri = boolean | undefined;
 export interface Query {
   mode: "Direct" | "GFWList" | "Non-CN" | "Global";
   qtype: "A" | "AAAA" | "HTTPS" | "SVCB";
+  /** An actual queried name, for rules whose domain matchers need to be checked in order. */
+  domain?: string;
   gfw?: boolean;
   cnSite?: boolean;
   steam?: boolean;
@@ -35,6 +37,18 @@ const not = (v: Tri): Tri => (v === undefined ? undefined : !v);
 function leaf(rule: Json, q: Query): Tri {
   if ("match_response" in rule) return undefined;
   const checks: Tri[] = [];
+  const fields = ["domain", "domain_suffix", "domain_keyword", "domain_regex"].filter((k) => k in rule);
+  if (fields.length) {
+    checks.push(fields.some((k) => ([] as string[]).concat(rule[k]).some((v) => {
+      if (k === "domain_suffix" && v === "steamcontent.com" && q.steam) return true;
+      if (k === "domain_suffix" && v === "dns-rule.test" && q.dnsRule) return true;
+      if (!q.domain) return false;
+      if (k === "domain") return q.domain === v;
+      if (k === "domain_keyword") return q.domain.includes(v);
+      if (k === "domain_regex") return new RegExp(v).test(q.domain);
+      return q.domain === v || q.domain.endsWith(v.startsWith(".") ? v : `.${v}`);
+    })));
+  }
   for (const [k, v] of Object.entries(rule)) {
     switch (k) {
       case "clash_mode":
@@ -64,10 +78,6 @@ function leaf(rule: Json, q: Query): Tri {
         );
         break;
       }
-      case "domain_suffix":
-        checks.push(([] as string[]).includes.call(v, "steamcontent.com") ? !!q.steam : ([] as string[]).includes.call(v, "dns-rule.test") ? !!q.dnsRule : false);
-        break;
-      case "domain":
       case "preferred_by":
         checks.push(false);
         break;

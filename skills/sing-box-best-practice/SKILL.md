@@ -24,7 +24,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 |---|---|
 | 节点（18 种协议）、是否加入默认代理组（`proxy`、`auto`） | 节点 |
 | 代理组（手动选择 / 自动测速，可嵌套）、`proxy` 的默认选择 | 代理组 |
-| 默认模式；直连域名/IP；代理域名/IP；“域名/IP → 指定节点或代理组”的规则 | 分流 |
+| 默认模式；直连域名/IP；代理域名/IP；“域名/IP → proxy、auto、direct 或指定节点、代理组”的规则 | 分流 |
 | Tailscale：MagicDNS、默认 DNS、额外路由、作为代理出口、出口节点 | Tailscale |
 | 指定域名用哪个 DNS（含交给 tailnet 的 DNS） | 分流（DNS 分流） |
 | 目标平台、代理 DNS（预设或自定义 JSON）、ECS、Clash API、Steam、禁止 iCloud QUIC | 设置 |
@@ -60,11 +60,11 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 
 ### DNS 规则顺序（`dns.rules`）
 
-1. （有 DNS 分流时）`custom-dns-domains` 里的域名（局域网域名除外，它们所有记录照常返回）：会走代理的（代理域名、规则域名，或不确定直连的）IPv6 类查询返回空；确定直连且本机没有公网 IPv6 时 `AAAA` 返回空。然后按 DNS 规则顺序 → 各自的服务器（`local`、`remote`、`<tailnet>-dns` 或 `dns-rule-<序号>`）。交给 `<tailnet>-dns` 的域名不在 `custom-dns-domains` 里，所有记录照常返回。
+1. （有 DNS 分流时）`custom-dns-domains` 里的域名（局域网域名除外，它们所有记录照常返回）：会走代理的（代理域名、走代理的规则域名，或不确定直连的）IPv6 类查询返回空；确定直连且本机没有公网 IPv6 时 `AAAA` 返回空。然后按 DNS 规则顺序 → 各自的服务器（`local`、`remote`、`<tailnet>-dns` 或 `dns-rule-<序号>`）。交给 `<tailnet>-dns` 的域名不在 `custom-dns-domains` 里，所有记录照常返回。
 2. Tailscale：MagicDNS（`preferred_by`，匹配 tailnet 设备名和后台配置的 split DNS 后缀）→ `<tailnet>-dns`。
 2b. `preferred_by: local`、本地域名 → `local`。
-3. （有代理域名或规则时）代理域名、规则域名：IPv6 类查询返回空；其余 → `remote`。条件都带“不是 Direct 模式、不在直连列表”。
-4. 直连流量：本机没有公网 IPv6 时 `AAAA` 返回空；其余 → `local`。“直连流量”由一个 `or` 判断，覆盖 Direct 模式、直连列表、GFWList 模式下不在 gfwlist 的、Non-CN 模式下在 `geosite-geolocation-cn` 的。
+3. （有代理域名或规则时）代理域名、走代理的规则域名：IPv6 类查询返回空；其余 → `remote`。条件都带“不是 Direct 模式、不在直连列表、没有按规则顺序匹配到 direct”。
+4. 直连流量：本机没有公网 IPv6 时 `AAAA` 返回空；其余 → `local`。“直连流量”由一个 `or` 判断，覆盖 Direct 模式、按规则顺序匹配到 direct 的域名、直连列表、GFWList 模式下不在 gfwlist 的、Non-CN 模式下在 `geosite-geolocation-cn` 的。
 5. Non-CN 模式下的其余域名：`evaluate` 问 `local`（`local-answer`，超时 500ms）；返回内网 IP 或国内 IP 时 `respond`（`race: true`），没有公网 IPv6 时国内 `AAAA` 返回空。
 6. 走代理：IPv6 类查询返回空；`evaluate` 问 `remote`（`speculative: true`，和第 5 步并行）；`respond`；兜底 `SERVFAIL`。
 
@@ -77,7 +77,7 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 3. Tailscale：`preferred_by` → 端点；额外路由 → 端点。
 4. 本地域名、`ip_is_private` → `direct`。
 5. Direct 模式 → `direct`；非 Global 模式下的直连列表（`custom-direct-domains`、`custom-direct-ips`）→ `direct`。
-6. 用户规则：域名/IP → 指定节点或代理组，按列表顺序。
+6. 用户规则：域名/IP → proxy、auto、direct 或指定节点、代理组，按列表顺序。指向 direct 的域名本地解析；国内 IPv6 在本机没有公网 IPv6 时仍拒绝。
 7. 代理列表（`gfwlist-custom-domains`、`gfwlist-custom-ips`）→ `proxy`。
 8. GFWList 模式下不在 gfwlist（含 Telegram IP 和自定义代理）的 → `direct`。
 9. Non-CN 模式下国内域名、内网、国内 IP → `direct`。
@@ -94,8 +94,8 @@ description: Modify a sing-box config.json made by singbox-confgen (the "sing-bo
 | `telegram-ip` | 内联 | GFWList 模式下按 IP 走代理 |
 | `gfwlist-custom-domains`、`gfwlist-custom-ips` | 内联 | 自定义代理（也并入 GFWList 判断） |
 | `custom-direct-domains`、`custom-direct-ips` | 内联 | 自定义直连 |
-| `custom-rule-domains` | 内联 | 只给 DNS 用：规则里的域名，按走代理解析 |
-| `custom-rule-ips` | 内联 | 只给 IPv6 拒绝规则用：规则里的 IP，放行 |
+| `custom-rule-domains` | 内联 | 只给 DNS 用：规则里的域名；按规则顺序匹配到 direct 时本地解析，其余按走代理解析 |
+| `custom-rule-ips` | 内联 | 只给 IPv6 拒绝规则用：规则里的 IP；代理放行，direct 仍需本机有公网 IPv6 |
 | `custom-dns-domains` | 内联 | 只给 DNS 用：DNS 分流里的所有域名，套用 IPv6 策略 |
 | 规则引用的在线规则集（如 `geosite-openai`、`geoip-us`） | SagerNet 官方或任意链接 | 规则：单独一条 `rule_set → 出口`；只含域名的也进 DNS 的走代理判断，含 IP 的放行 IPv6 拒绝规则 |
 

@@ -139,6 +139,19 @@ export function sampleProfiles(): { name: string; profile: Profile }[] {
     samples.push({ name: "rules-edge", profile: p });
   }
   {
+    // Built-in routing targets, including ordered direct/proxy overlaps and chosen DNS.
+    const p = blueprintProfile();
+    p.nodes = [newNode({ tag: "hy2", body: filledBody("hysteria2") })];
+    p.settings.rules = [
+      newRule({ outbound: "proxy", lines: ["proxy.example", "240e:1::/32"], ruleSets: [{ source: "geosite-openai", content: "domain" }] }),
+      newRule({ outbound: "direct", lines: ["direct.example", "240e::/20"], ruleSets: [{ source: "geosite-geolocation-cn", content: "domain" }, { source: "geoip-cn", content: "ip" }] }),
+      newRule({ outbound: "auto", lines: ["auto.example", "240e::/16"] }),
+    ];
+    p.settings.proxyRules = ["direct.example", "240e::/20"];
+    p.settings.dnsRules = [newDnsRule({ server: "remote", lines: ["direct.example"] })];
+    samples.push({ name: "rules-built-in", profile: p });
+  }
+  {
     const p = blueprintProfile();
     p.nodes = [newNode({ tag: "hy2", body: filledBody("hysteria2") })];
     p.settings.remoteDns = { ...p.settings.remoteDns, provider: "custom" }; // the default custom template

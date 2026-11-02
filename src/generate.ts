@@ -6,6 +6,13 @@ type Json = Record<string, unknown>;
 
 const URL_TEST = { url: "https://www.gstatic.com/generate_204", interval: "3m", tolerance: 50, idle_timeout: "30m" };
 
+/** Generated outbounds that routing rules may select without a node or group id. */
+export const BUILT_IN_RULE_TARGETS = [
+  { id: "proxy", tag: "proxy", kind: "默认选择器" },
+  { id: "auto", tag: "auto", kind: "自动测速" },
+  { id: "direct", tag: "direct", kind: "直连" },
+];
+
 const GFW = ["gfwlist", "gfwlist-custom-domains"];
 const GFW_IPS = ["telegram-ip", "gfwlist-custom-ips"];
 const CUSTOM_PROXY = ["gfwlist-custom-domains", "gfwlist-custom-ips"];
@@ -289,7 +296,7 @@ interface BuiltRuleSet extends ResolvedRuleSet {
   tag: string;
 }
 
-/** A rule from the routing tab whose node or group exists, with its parsed entries and rule-sets. */
+/** A rule from the routing tab whose outbound exists, with its parsed entries and rule-sets. */
 interface BuiltRule {
   rule: RouteRule;
   tag: string;
@@ -322,7 +329,7 @@ function builtRules(s: Settings, tags: Map<string, string>): BuiltRule[] {
     return tag;
   };
   return s.rules.flatMap((rule) => {
-    const tag = tags.get(rule.outbound);
+    const tag = BUILT_IN_RULE_TARGETS.find((t) => t.id === rule.outbound)?.tag ?? tags.get(rule.outbound);
     if (!tag) return [];
     const { domains, cidrs } = parseRuleList(rule.lines.join("\n"));
     const sets: BuiltRuleSet[] = [];
@@ -371,8 +378,9 @@ function builtDnsRules(s: Settings): BuiltDnsRule[] {
 }
 
 /**
- * Rule-sets of domains always sent through a proxy (the proxy list, the rules), for DNS. Remote
- * sets that may hold IP prefixes stay out: in a DNS rule those would be legacy address filters,
+ * Rule-sets used to recognize proxy and rule domains for DNS; proxiedByDomain excludes direct
+ * rules according to their order. Remote sets that may hold IP prefixes stay out: in a DNS rule
+ * those would be legacy address filters,
  * which sing-box refuses next to `query_type`.
  */
 function proxiedSets(s: Settings, rules: BuiltRule[]): string[] {
@@ -383,7 +391,7 @@ function proxiedSets(s: Settings, rules: BuiltRule[]): string[] {
   ];
 }
 
-/** Rule-sets of IP prefixes listed to go through a proxy (the proxy list, the rules). */
+/** Rule-sets of listed IP prefixes; ordered direct rules override the proxy exemptions. */
 function listedIpSets(s: Settings, rules: BuiltRule[]): string[] {
   return [
     ...(proxyList(s).cidrs.length ? ["gfwlist-custom-ips"] : []),
@@ -394,13 +402,35 @@ function listedIpSets(s: Settings, rules: BuiltRule[]): string[] {
 
 const oneOrList = (xs: string[]) => (xs.length === 1 ? xs[0] : xs);
 
+/** Matches routed direct by the first applicable rule, before the proxy list and mode defaults. */
+function directRuleMatch(rules: BuiltRule[], content: "domain" | "ip"): Json | undefined {
+  const earlierProxy: Json[] = [];
+  const direct: Json[] = [];
+  for (const r of rules) {
+    const sets = r.sets.filter((x) => x.content === content).map((x) => x.tag);
+    const entries = content === "domain"
+      ? (matchCount(r.domains) ? matchFields(r.domains) : undefined)
+      : (r.cidrs.length ? { ip_cidr: r.cidrs } : undefined);
+    const matches = [...(entries ? [entries] : []), ...(sets.length ? [{ rule_set: oneOrList(sets) }] : [])];
+    if (!matches.length) continue;
+    const match = or(matches);
+    if (r.tag === "direct") {
+      direct.push(earlierProxy.length ? and([match, or([...earlierProxy], { invert: true })]) : match);
+    } else {
+      earlierProxy.push(match);
+    }
+  }
+  return direct.length ? or(direct) : undefined;
+}
+
 /**
  * Domains whose traffic the route rules send `direct` regardless of the resolved IP.
  * Mirrors the Direct / custom direct / GFWList / Non-CN route rules below.
  */
-function directByDomain(s: Settings, proxied: string[]): Json {
+function directByDomain(s: Settings, proxied: string[], ruleDirect?: Json): Json {
   return or([
     { clash_mode: "Direct" },
+    ...(ruleDirect ? [ruleDirect] : []),
     and([{ clash_mode: "Global", invert: true }, { rule_set: CUSTOM_DIRECT }]),
     and([{ clash_mode: "GFWList" }, { rule_set: GFW, invert: true }]),
     and([
@@ -412,8 +442,13 @@ function directByDomain(s: Settings, proxied: string[]): Json {
 }
 
 /** Custom proxy and rule domains, outside Direct mode and unless also listed as direct. */
-const proxiedByDomain = (proxied: string[]): Json =>
-  and([{ clash_mode: "Direct", invert: true }, { rule_set: CUSTOM_DIRECT, invert: true }, { rule_set: oneOrList(proxied) }]);
+const proxiedByDomain = (proxied: string[], ruleDirect?: Json): Json =>
+  and([
+    { clash_mode: "Direct", invert: true },
+    { rule_set: CUSTOM_DIRECT, invert: true },
+    ...(ruleDirect ? [{ ...ruleDirect, invert: true }] : []),
+    { rule_set: oneOrList(proxied) },
+  ]);
 
 /**
  * DNS policy:
@@ -429,12 +464,13 @@ const proxiedByDomain = (proxied: string[]): Json =>
 function dnsRules(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): Json[] {
   const ecs = s.clientSubnet.trim() ? { client_subnet: s.clientSubnet.trim() } : {};
   const proxied = proxiedSets(s, rules);
-  const direct = directByDomain(s, proxied);
+  const ruleDirect = directRuleMatch(rules, "domain");
+  const direct = directByDomain(s, proxied, ruleDirect);
   const magicDns: Json[] = s.tailnets.filter((t) => t.magicDns).map((t) => ({ preferred_by: dnsTag(t), action: "route", server: dnsTag(t) }));
   const customProxy: Json[] = proxied.length
     ? [
-        and([{ query_type: IPV6_CARRIERS }, proxiedByDomain(proxied)], { action: "predefined", rcode: "NOERROR" }),
-        { ...proxiedByDomain(proxied), action: "route", server: "remote" },
+        and([{ query_type: IPV6_CARRIERS }, proxiedByDomain(proxied, ruleDirect)], { action: "predefined", rcode: "NOERROR" }),
+        { ...proxiedByDomain(proxied, ruleDirect), action: "route", server: "remote" },
       ]
     : [];
   // Domains with a chosen DNS server: the IPv6 policy still follows how their traffic is routed.
@@ -445,7 +481,7 @@ function dnsRules(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
     ...(dnsChoices.some((r) => !r.tailnet)
       ? [
         ...(proxied.length
-          ? [and([{ query_type: IPV6_CARRIERS }, chosenSet, proxiedByDomain(proxied)], { action: "predefined", rcode: "NOERROR" })]
+          ? [and([{ query_type: IPV6_CARRIERS }, chosenSet, proxiedByDomain(proxied, ruleDirect)], { action: "predefined", rcode: "NOERROR" })]
           : []),
         and([{ query_type: "AAAA" }, noPublicV6Interface, chosenSet, direct], { action: "predefined", rcode: "NOERROR" }),
         // Not known to go direct (in Non-CN mode it depends on the answer): treated as proxied, IPv4 only.
@@ -555,6 +591,7 @@ function dnsServers(s: Settings, dnsChoices: BuiltDnsRule[]): Json[] {
 function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
   const gfwAll = [...GFW, ...GFW_IPS];
   const listedIps = listedIpSets(s, rules);
+  const ruleDirect = directRuleMatch(rules, "ip");
   const tailnetTags = s.tailnets.map((t) => t.tag);
   const tailnetExtra = s.tailnets.flatMap((t) => {
     const { domains, cidrs } = parseRuleList(t.routes.join("\n"));
@@ -570,7 +607,7 @@ function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
   });
   return [
     // No public IPv6 locally: refuse direct CN IPv6 before the handshake so apps fall back to IPv4.
-    // Addresses listed in the proxy list or a rule are meant to go through a proxy, so they pass.
+    // Listed proxy addresses pass, unless an earlier direct list or rule wins.
     and(
       [
         { network: ["tcp", "udp"], ip_version: 6, ip_cidr: PUBLIC_V6 },
@@ -581,12 +618,20 @@ function routeRules(s: Settings, rules: BuiltRule[]): Json[] {
         // Unless the direct list, which routing checks first, also has them.
         ...(listedIps.length
           ? [
-              directList(s).cidrs.length
-                ? or([{ rule_set: oneOrList(listedIps), invert: true }, { rule_set: CUSTOM_DIRECT_IPS }])
+              directList(s).cidrs.length || ruleDirect
+                ? or([
+                    { rule_set: oneOrList(listedIps), invert: true },
+                    ...(directList(s).cidrs.length ? [{ rule_set: CUSTOM_DIRECT_IPS }] : []),
+                    ...(ruleDirect ? [ruleDirect] : []),
+                  ])
                 : { rule_set: oneOrList(listedIps), invert: true },
             ]
           : []),
-        or([{ clash_mode: "Non-CN" }, and([{ clash_mode: "GFWList" }, { rule_set: gfwAll, invert: true }])]),
+        or([
+          { clash_mode: "Non-CN" },
+          and([{ clash_mode: "GFWList" }, { rule_set: gfwAll, invert: true }]),
+          ...(ruleDirect ? [and([{ clash_mode: "Direct", invert: true }, ruleDirect])] : []),
+        ]),
       ],
       { action: "reject", method: "default", no_drop: true },
     ),
@@ -677,11 +722,11 @@ function ruleSets(s: Settings, rules: BuiltRule[], dnsChoices: BuiltDnsRule[]): 
     { type: "inline", tag: CUSTOM_DIRECT, rules: matchCount(direct) ? [matchFields(direct)] : NEVER },
     // Only for the direct route rule: DNS goes by domain, and the reject rule still refuses CN IPv6 here.
     ...(directIps.length ? [{ type: "inline", tag: CUSTOM_DIRECT_IPS, rules: [{ ip_cidr: directIps }] }] : []),
-    // Only for the IPv6 reject rule: the prefixes of all rules, which it lets through.
+    // Only for the IPv6 reject rule: listed prefixes; direct rules still need local IPv6.
     ...(listedIpSets(s, rules).includes(RULE_IPS)
       ? [{ type: "inline", tag: RULE_IPS, rules: [{ ip_cidr: [...new Set(rules.flatMap((r) => r.cidrs))] }] }]
       : []),
-    // Only for DNS: the domains of all rules, resolved like the proxy list.
+    // Only for DNS: rule domains; directRuleMatch keeps direct rules on the local resolver.
     ...(proxiedSets(s, rules).includes(RULE_DOMAINS)
       ? [{ type: "inline", tag: RULE_DOMAINS, rules: rules.filter((r) => matchCount(r.domains)).map((r) => matchFields(r.domains)) }]
       : []),
@@ -999,7 +1044,7 @@ export function validate(profile: Profile): Issue[] {
       warn(at, "还没有填写域名、IP 或规则集，暂不写入配置");
     }
     if (!r.outbound) warn(at, "还没有选择出口，暂不写入配置");
-    else if (!group && !node) warn(at, "出口的节点或代理组已删除，暂不写入配置");
+    else if (!BUILT_IN_RULE_TARGETS.some((t) => t.id === r.outbound) && !group && !node) warn(at, "出口的节点或代理组已删除，暂不写入配置");
     else if (node && nodeObject(node).error) warn(at, `节点「${node.tag}」的配置有错误，暂不写入配置`);
     else if (group && !usable.has(group.id)) warn(at, `代理组「${group.tag}」还是空的，暂不写入配置`);
   });

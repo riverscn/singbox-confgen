@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
 import type { DnsRule, DnsRuleServer, Platform, Profile, ProxyGroup, ProxyNode, RemoteDnsChoice, RemoteDnsProtocol, RouteRule, RuleSetContent, RuleSetRef, Settings, Tailnet } from "./types";
 import { TEMPLATES } from "./templates";
-import { REMOTE_DNS, customDnsServer, dnsRuleTag, generateConfig, nodeObject, proxyChoices, parseDomainList, parseRuleList, tailnetEndpoint, validate, type DomainMatch, type Issue } from "./generate";
+import { BUILT_IN_RULE_TARGETS, REMOTE_DNS, customDnsServer, dnsRuleTag, generateConfig, nodeObject, proxyChoices, parseDomainList, parseRuleList, tailnetEndpoint, validate, type DomainMatch, type Issue } from "./generate";
 import { defaultSettings, freshTag, newDnsRule, newGroup, newNode, newRule, newTailnet, randomSecret } from "./defaults";
 import { clearStore, defaultStore, loadStore, newSavedProfile, saveStore, type Store } from "./storage";
 import { fitImport, type ImportResult } from "./importer";
@@ -1015,8 +1015,8 @@ function RoutingCard(props: { settings: Settings; onChange: (patch: Partial<Sett
 function RuleCard(props: {
   rule: RouteRule;
   index: number;
-  /** Nodes and groups the rule can send traffic to. */
-  targets: Candidate[];
+  /** Built-in outbounds, nodes and groups the rule can send traffic to. */
+  targets: { id: string; tag: string; kind: string }[];
   issues: Issue[];
   expanded: boolean;
   onToggle: () => void;
@@ -1058,7 +1058,7 @@ function RuleCard(props: {
       }
     >
       <IssueList issues={props.issues} />
-      <FormField label="出口" hint="匹配的流量经这个节点或代理组">
+      <FormField label="出口" hint="匹配的流量经这个出口，可选默认出口、节点或代理组">
         {(id) => (
           <SimpleSelect
             id={id}
@@ -2125,7 +2125,7 @@ export default function App() {
     profile.settings.rules.map((r) => r.id),
     (ids) => setProfile((p) => ({ ...p, settings: { ...p.settings, rules: ids.map((id) => p.settings.rules.find((r) => r.id === id)!) } })),
   );
-  const ruleTargets = [...candidates.filter((c) => c.kind === "代理组"), ...candidates.filter((c) => c.kind === "节点")];
+  const ruleTargets = [...BUILT_IN_RULE_TARGETS, ...candidates.filter((c) => c.kind === "代理组"), ...candidates.filter((c) => c.kind === "节点")];
   const addRule = () => {
     const r = newRule();
     setSettings({ rules: [...profile.settings.rules, r] });
@@ -2589,7 +2589,7 @@ export default function App() {
                         </Button>
                       </ListHead>
                       <Intro>
-                        让匹配的流量走指定的节点或代理组，例如 AI 服务走美国节点。除 Direct 外始终生效，用远程 DNS 解析；多条规则从上到下第一条匹配的生效，拖动左侧手柄调整顺序。
+                        让匹配的流量走指定出口：proxy 跟随默认选择，auto 自动测速，direct 直连，也可选节点或代理组。除 Direct 模式外始终生效；直连用本地 DNS，代理用远程 DNS。多条规则从上到下第一条匹配的生效，拖动左侧手柄调整顺序。
                       </Intro>
                       {profile.settings.rules.length === 0 && <Empty>还没有规则。</Empty>}
                       {profile.settings.rules.map((r, i) => (
